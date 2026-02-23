@@ -1,0 +1,39 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFramework>netstandard2.0</TargetFramework>
+    <LangVersion>latest</LangVersion>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <EnforceExtendedAnalyzerRules>true</EnforceExtendedAnalyzerRules>
+
+    <PackageId>AutoInstrument</PackageId>
+    <Version>1.0.0</Version>
+    <Description>Rust-style #[instrument] for .NET — automatic OpenTelemetry tracing via source generators and interceptors</Description>
+
+    <!-- Source generator packaging -->
+    <IncludeBuildOutput>false</IncludeBuildOutput>
+    <IsRoslynComponent>true</IsRoslynComponent>
+    <DevelopmentDependency>true</DevelopmentDependency>
+    <SuppressDependenciesWhenPacking>true</SuppressDependenciesWhenPacking>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <!-- Roslyn 4.12+ for stable GetInterceptableLocation API -->
+    <PackageReference Include="Microsoft.CodeAnalysis.CSharp" Version="4.12.0" PrivateAssets="all" />
+    <PackageReference Include="Microsoft.CodeAnalysis.Analyzers" Version="3.3.4" PrivateAssets="all" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\AutoInstrument.Attributes\AutoInstrument.Attributes.csproj" />
+  </ItemGroup>
+
+  <!-- Pack correctly for NuGet -->
+  <ItemGroup>
+    <None Include="$(OutputPath)\$(AssemblyName).dll" Pack="true" PackagePath="analyzers/dotnet/cs" Visible="false" />
+    <None Include="$(OutputPath)\AutoInstrument.Attributes.dll" Pack="true" PackagePath="lib/netstandard2.0" Visible="false" />
+    <None Include="AutoInstrument.props" Pack="true" PackagePath="build" Visible="false" />
+    <None Include="AutoInstrument.props" Pack="true" PackagePath="buildTransitive" Visible="false" />
+  </ItemGroup>
+
+</Project>
