@@ -18,5 +18,5 @@ jobs:
       - run: dotnet restore
       - run: dotnet build --no-restore -c Release
       - run: dotnet test --no-build -c Release
-      - run: dotnet pack --no-build -c Release /p:Version=${{ inputs.version }}
-      - run: dotnet nuget push **/*.nupkg --source https://api.nuget.org/v3/index.json --api-key ${{ secrets.NUGET_API_KEY }}
+      - run: dotnet pack src/AutoInstrument.Generator/AutoInstrument.Generator.csproj --no-build -c Release /p:Version=${{ inputs.version }}
+      - run: dotnet nuget push src/AutoInstrument.Generator/bin/Release/*.nupkg --source https://api.nuget.org/v3/index.json --api-key ${{ secrets.NUGET_API_KEY }}
