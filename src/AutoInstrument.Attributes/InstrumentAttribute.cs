@@ -4,15 +4,15 @@ namespace AutoInstrument;
 
 /// <summary>
 /// Marks a method for automatic OpenTelemetry instrumentation.
-/// At compile time, a source generator intercepts all call-sites of this method
-/// and wraps each call in an Activity span — capturing parameters as tags
+/// At compile time, intercepts all call-sites of this method
+/// and wraps each call in an Activity span - capturing parameters as tags
 /// and recording exceptions automatically.
 ///
 /// Inspired by Rust's <c>#[tracing::instrument]</c>.
 /// </summary>
 /// <example>
 /// <code>
-/// // Just add the attribute. That's it. No partial, no _Body, nothing else.
+/// // Just add the attribute
 /// [Instrument]
 /// public async Task&lt;Order&gt; ProcessOrder(int orderId, string customerName)
 /// {
