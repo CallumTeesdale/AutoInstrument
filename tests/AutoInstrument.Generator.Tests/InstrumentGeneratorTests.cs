@@ -33,7 +33,7 @@ public class InstrumentGeneratorTests
 
         var results = GeneratorTestHelper.RunGenerator(source);
 
-        // No separate ActivitySource file — everything in the interceptors file
+        // No separate ActivitySource file
         Assert.DoesNotContain(results, r => r.HintName.Contains("_ActivitySource"));
 
         var interceptor = results.FirstOrDefault(r => r.HintName.Contains("Interceptors"));
@@ -354,7 +354,7 @@ public class InstrumentGeneratorTests
         var interceptor = results.FirstOrDefault(r => r.HintName.Contains("Interceptors"));
         Assert.NotNull(interceptor.Source);
 
-        // Both classes default to assembly name — should be exactly one ActivitySource
+        // Both classes default to assembly name hould be exactly one ActivitySource
         var sourceCount = interceptor.Source.Split("new(\"TestAssembly\")").Length - 1;
         Assert.Equal(1, sourceCount);
 
@@ -390,7 +390,6 @@ public class InstrumentGeneratorTests
 
         var interceptor = results.FirstOrDefault(r => r.HintName.Contains("Interceptors"));
         Assert.Contains("HasListeners()", interceptor.Source);
-        // HasListeners check must appear before StartActivity
         var hasListenersIndex = interceptor.Source.IndexOf("HasListeners()");
         var startActivityIndex = interceptor.Source.IndexOf("StartActivity(");
         Assert.True(hasListenersIndex < startActivityIndex,
