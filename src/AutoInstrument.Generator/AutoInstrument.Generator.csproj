@@ -12,7 +12,6 @@
     <Description>Rust-style #[instrument] for .NET — automatic OpenTelemetry tracing via source generators and interceptors</Description>
     <PackageReadmeFile>README.md</PackageReadmeFile>
     <PackageTags>opentelemetry tracing instrumentation source-generator interceptor observability apm dotnet</PackageTags>
-    <PackageReleaseNotes>Automatic OpenTelemetry span creation via [Instrument] attribute using source generators and interceptors.</PackageReleaseNotes>
 
     <!-- Source generator packaging -->
     <IncludeBuildOutput>false</IncludeBuildOutput>
