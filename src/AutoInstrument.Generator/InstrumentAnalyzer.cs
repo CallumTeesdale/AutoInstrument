@@ -125,7 +125,8 @@ public sealed class InstrumentAnalyzer : DiagnosticAnalyzer
 
                         if (propertyPath is not null)
                         {
-                            ValidatePropertyPath(context, param.Type, paramName, propertyPath, methodName, location);
+                            ValidatePropertyPath(context, param.Type, paramName, propertyPath, location,
+                                InvalidPropertyPath, methodName);
                         }
                     }
                     break;
@@ -236,18 +237,19 @@ public sealed class InstrumentAnalyzer : DiagnosticAnalyzer
             foreach (var value in arg.Value.Values)
             {
                 if (value.Value is not string propPath) continue;
-                ValidateTagMemberPropertyPath(context, memberType, memberName, propPath, location,
+                ValidatePropertyPath(context, memberType, memberName, propPath, location,
                     arg.Key == "Skip" ? InvalidTagSkipProperty : InvalidTagFieldsProperty);
             }
         }
     }
 
     private static void ValidatePropertyPath(SymbolAnalysisContext context, ITypeSymbol rootType,
-        string rootName, string propertyPath, string methodName, Location location)
+        string ownerName, string propertyPath, Location location, DiagnosticDescriptor descriptor,
+        string? methodName = null)
     {
         var segments = propertyPath.Split('.');
         var currentType = rootType;
-        var currentPath = rootName;
+        var currentPath = ownerName;
 
         foreach (var segment in segments)
         {
@@ -260,33 +262,16 @@ public sealed class InstrumentAnalyzer : DiagnosticAnalyzer
             if (prop is null)
             {
                 var typeName = currentType.ToDisplayString(SymbolDisplayFormat.MinimallyQualifiedFormat);
-                context.ReportDiagnostic(Diagnostic.Create(
-                    InvalidPropertyPath, location, segment, currentPath.Substring(0, currentPath.LastIndexOf('.')), typeName, methodName));
-                return;
-            }
-
-            currentType = prop.Type;
-        }
-    }
-
-    private static void ValidateTagMemberPropertyPath(SymbolAnalysisContext context, ITypeSymbol rootType,
-        string memberName, string propertyPath, Location location, DiagnosticDescriptor descriptor)
-    {
-        var segments = propertyPath.Split('.');
-        var currentType = rootType;
-
-        foreach (var segment in segments)
-        {
-            var prop = currentType.GetMembers()
-                .OfType<IPropertySymbol>()
-                .FirstOrDefault(p => string.Equals(p.Name, segment, System.StringComparison.OrdinalIgnoreCase)
-                    && p is { DeclaredAccessibility: Accessibility.Public, IsStatic: false, GetMethod: not null });
-
-            if (prop is null)
-            {
-                var typeName = currentType.ToDisplayString(SymbolDisplayFormat.MinimallyQualifiedFormat);
-                context.ReportDiagnostic(Diagnostic.Create(
-                    descriptor, location, segment, memberName, typeName));
+                if (methodName is not null)
+                {
+                    context.ReportDiagnostic(Diagnostic.Create(
+                        descriptor, location, segment, currentPath.Substring(0, currentPath.LastIndexOf('.')), typeName, methodName));
+                }
+                else
+                {
+                    context.ReportDiagnostic(Diagnostic.Create(
+                        descriptor, location, segment, ownerName, typeName));
+                }
                 return;
             }
 
