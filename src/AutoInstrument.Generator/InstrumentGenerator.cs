@@ -565,8 +565,21 @@ public sealed class InstrumentGenerator : IIncrementalGenerator
                     }
                     foreach (var tm in tagMembers)
                     {
-                        var tagName = tm.TagName ?? tm.MemberName.ToLowerInvariant();
-                        sb.AppendLine($"                __activity.SetTag(\"{Escape(tagName)}\", __self.{tm.MemberName});");
+                        if (tm.IsComplex && tm.Properties.Length > 0)
+                        {
+                            foreach (var prop in tm.Properties)
+                            {
+                                if (!ShouldTagTagMemberProperty(tm, prop)) continue;
+                                var baseName = tm.TagName ?? tm.MemberName.ToLowerInvariant();
+                                var tagName = $"{baseName}.{prop.Name.ToLowerInvariant()}";
+                                sb.AppendLine($"                __activity.SetTag(\"{Escape(tagName)}\", __self.{tm.MemberName}?.{prop.Name});");
+                            }
+                        }
+                        else
+                        {
+                            var tagName = tm.TagName ?? tm.MemberName.ToLowerInvariant();
+                            sb.AppendLine($"                __activity.SetTag(\"{Escape(tagName)}\", __self.{tm.MemberName});");
+                        }
                     }
                     sb.AppendLine("            }");
                     sb.AppendLine();
@@ -729,6 +742,15 @@ public sealed class InstrumentGenerator : IIncrementalGenerator
         return true;
     }
 
+    private static bool ShouldTagTagMemberProperty(TagMemberInfo tm, PropertyMetadata prop)
+    {
+        if (tm.Fields.Length > 0)
+            return tm.Fields.Any(f => string.Equals(f, prop.Name, System.StringComparison.OrdinalIgnoreCase));
+        if (tm.Skip.Length > 0)
+            return !tm.Skip.Any(s => string.Equals(s, prop.Name, System.StringComparison.OrdinalIgnoreCase));
+        return true;
+    }
+
     private static ParameterInfo ExtractParameterInfo(IParameterSymbol p, string? refKind)
     {
         var type = p.Type;
@@ -790,21 +812,58 @@ public sealed class InstrumentGenerator : IIncrementalGenerator
             if (tagAttr is null) continue;
 
             string? tagName = null;
+            string[]? skip = null;
+            string[]? fields = null;
             foreach (var arg in tagAttr.NamedArguments)
             {
-                if (arg.Key == "Name")
-                    tagName = arg.Value.Value as string;
+                switch (arg.Key)
+                {
+                    case "Name":
+                        tagName = arg.Value.Value as string;
+                        break;
+                    case "Skip":
+                        skip = arg.Value.Values.Select(v => v.Value as string).Where(v => v != null).ToArray()!;
+                        break;
+                    case "Fields":
+                        fields = arg.Value.Values.Select(v => v.Value as string).Where(v => v != null).ToArray()!;
+                        break;
+                }
             }
 
-            string memberType;
+            ITypeSymbol typeSymbol;
             if (member is IPropertySymbol prop)
-                memberType = prop.Type.ToDisplayString(SymbolDisplayFormat.FullyQualifiedFormat);
+                typeSymbol = prop.Type;
             else if (member is IFieldSymbol field)
-                memberType = field.Type.ToDisplayString(SymbolDisplayFormat.FullyQualifiedFormat);
+                typeSymbol = field.Type;
             else
                 continue;
 
-            tagMembers.Add(new TagMemberInfo(member.Name, tagName, memberType));
+            var memberType = typeSymbol.ToDisplayString(SymbolDisplayFormat.FullyQualifiedFormat);
+            bool isComplex = IsComplexType(typeSymbol);
+            var properties = System.Array.Empty<PropertyMetadata>();
+
+            if (isComplex)
+            {
+                properties = typeSymbol.GetMembers()
+                    .OfType<IPropertySymbol>()
+                    .Where(p => p.DeclaredAccessibility == Accessibility.Public
+                        && !p.IsStatic
+                        && !p.IsIndexer
+                        && p.GetMethod is not null)
+                    .Select(p => new PropertyMetadata(
+                        p.Name,
+                        p.Type.ToDisplayString(SymbolDisplayFormat.FullyQualifiedFormat)))
+                    .ToArray();
+            }
+
+            tagMembers.Add(new TagMemberInfo(
+                member.Name,
+                tagName,
+                memberType,
+                isComplex,
+                new EquatableArray<PropertyMetadata>(properties),
+                new EquatableArray<string>(skip ?? System.Array.Empty<string>()),
+                new EquatableArray<string>(fields ?? System.Array.Empty<string>())));
         }
         return tagMembers.ToArray();
     }

@@ -9,6 +9,7 @@ public sealed class InstrumentAnalyzer : DiagnosticAnalyzer
 {
     private const string AttributeFqn = "AutoInstrument.InstrumentAttribute";
     private const string NoInstrumentAttributeFqn = "AutoInstrument.NoInstrumentAttribute";
+    private const string TagAttributeFqn = "AutoInstrument.TagAttribute";
 
     public static readonly DiagnosticDescriptor InvalidSkipParameter = new(
         id: "AUTOINST001",
@@ -58,15 +59,33 @@ public sealed class InstrumentAnalyzer : DiagnosticAnalyzer
         defaultSeverity: DiagnosticSeverity.Warning,
         isEnabledByDefault: true);
 
+    public static readonly DiagnosticDescriptor InvalidTagSkipProperty = new(
+        id: "AUTOINST007",
+        title: "Invalid property in [Tag] Skip",
+        messageFormat: "'{0}' is not a public property of '{1}' (type '{2}')",
+        category: "AutoInstrument",
+        defaultSeverity: DiagnosticSeverity.Warning,
+        isEnabledByDefault: true);
+
+    public static readonly DiagnosticDescriptor InvalidTagFieldsProperty = new(
+        id: "AUTOINST008",
+        title: "Invalid property in [Tag] Fields",
+        messageFormat: "'{0}' is not a public property of '{1}' (type '{2}')",
+        category: "AutoInstrument",
+        defaultSeverity: DiagnosticSeverity.Warning,
+        isEnabledByDefault: true);
+
     public override ImmutableArray<DiagnosticDescriptor> SupportedDiagnostics =>
         [InvalidSkipParameter, InvalidFieldsParameter, InvalidPropertyPath,
-         InvalidCondition, InvalidLinkTo, InvalidNoInstrumentProperty];
+         InvalidCondition, InvalidLinkTo, InvalidNoInstrumentProperty,
+         InvalidTagSkipProperty, InvalidTagFieldsProperty];
 
     public override void Initialize(AnalysisContext context)
     {
         context.ConfigureGeneratedCodeAnalysis(GeneratedCodeAnalysisFlags.None);
         context.EnableConcurrentExecution();
         context.RegisterSymbolAction(AnalyzeMethod, SymbolKind.Method);
+        context.RegisterSymbolAction(AnalyzeTagMember, SymbolKind.Property, SymbolKind.Field);
     }
 
     private static void AnalyzeMethod(SymbolAnalysisContext context)
@@ -197,6 +216,48 @@ public sealed class InstrumentAnalyzer : DiagnosticAnalyzer
                                 InvalidNoInstrumentProperty, paramLocation, propName, param.Name, typeName, methodName));
                         }
                     }
+                }
+            }
+        }
+    }
+
+    private static void AnalyzeTagMember(SymbolAnalysisContext context)
+    {
+        var attr = context.Symbol.GetAttributes().FirstOrDefault(a =>
+            a.AttributeClass?.ToDisplayString() == TagAttributeFqn);
+        if (attr is null) return;
+
+        ITypeSymbol memberType;
+        if (context.Symbol is IPropertySymbol prop)
+            memberType = prop.Type;
+        else if (context.Symbol is IFieldSymbol field)
+            memberType = field.Type;
+        else
+            return;
+
+        var location = attr.ApplicationSyntaxReference?.GetSyntax(context.CancellationToken).GetLocation()
+            ?? Location.None;
+        var memberName = context.Symbol.Name;
+        var typeName = memberType.ToDisplayString(SymbolDisplayFormat.MinimallyQualifiedFormat);
+
+        foreach (var arg in attr.NamedArguments)
+        {
+            if (arg.Key is not ("Skip" or "Fields")) continue;
+
+            var descriptor = arg.Key == "Skip" ? InvalidTagSkipProperty : InvalidTagFieldsProperty;
+            foreach (var value in arg.Value.Values)
+            {
+                if (value.Value is not string propName) continue;
+
+                var hasProperty = memberType.GetMembers()
+                    .OfType<IPropertySymbol>()
+                    .Any(p => string.Equals(p.Name, propName, System.StringComparison.OrdinalIgnoreCase)
+                              && p is { DeclaredAccessibility: Accessibility.Public, IsStatic: false, GetMethod: not null });
+
+                if (!hasProperty)
+                {
+                    context.ReportDiagnostic(Diagnostic.Create(
+                        descriptor, location, propName, memberName, typeName));
                 }
             }
         }

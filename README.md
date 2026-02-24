@@ -80,6 +80,18 @@ public class OrderService
 }
 ```
 
+Complex types are expanded one level deep, just like method parameters. Use `Skip` or `Fields` to control which properties become tags:
+
+```csharp
+public class OrderService
+{
+    [Tag(Skip = new[] { "Secret" })] public Config Settings { get; set; }
+    [Tag(Fields = new[] { "Region" })] public Config Backup { get; set; }
+    // Settings → settings.region, settings.timeout (Secret excluded)
+    // Backup   → backup.region (only Region included)
+}
+```
+
 ## Complex types
 
 Classes and structs are expanded one level deep into their public properties:
@@ -116,6 +128,8 @@ Or via MSBuild: `<AutoInstrumentTagNaming>Flat</AutoInstrumentTagNaming>`
 | AUTOINST004 | Condition is not a boolean member |
 | AUTOINST005 | LinkTo is not an ActivityContext parameter |
 | AUTOINST006 | `[NoInstrument]` references unknown property |
+| AUTOINST007 | `[Tag]` Skip references unknown property |
+| AUTOINST008 | `[Tag]` Fields references unknown property |
 
 ## Limitations
 

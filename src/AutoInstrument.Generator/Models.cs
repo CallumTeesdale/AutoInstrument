@@ -73,7 +73,11 @@ internal sealed record PropertyMetadata(
 internal sealed record TagMemberInfo(
     string MemberName,
     string? TagName,
-    string Type
+    string Type,
+    bool IsComplex = false,
+    EquatableArray<PropertyMetadata> Properties = default,
+    EquatableArray<string> Skip = default,
+    EquatableArray<string> Fields = default
 ) : IEquatable<TagMemberInfo>;
 
 internal readonly struct EquatableArray<T> : IEquatable<EquatableArray<T>>, IEnumerable<T>

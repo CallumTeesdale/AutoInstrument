@@ -918,6 +918,156 @@ public class InstrumentGeneratorTests
     }
 
     [Fact]
+    public void TagAttribute_ComplexType_ExpandsPublicProperties()
+    {
+        var source = """
+            using AutoInstrument;
+
+            public class Config
+            {
+                public string Region { get; set; }
+                public int Timeout { get; set; }
+                private string Secret { get; set; }
+            }
+
+            public class MyService
+            {
+                [Tag] public Config Settings { get; set; }
+
+                [Instrument]
+                public void Process(int id) { }
+            }
+
+            public class Caller
+            {
+                public void Run()
+                {
+                    var svc = new MyService();
+                    svc.Process(1);
+                }
+            }
+            """;
+
+        var results = GeneratorTestHelper.RunGenerator(source);
+
+        var interceptor = results.FirstOrDefault(r => r.HintName.Contains("Interceptors"));
+        Assert.Contains("SetTag(\"settings.region\", __self.Settings?.Region)", interceptor.Source);
+        Assert.Contains("SetTag(\"settings.timeout\", __self.Settings?.Timeout)", interceptor.Source);
+        Assert.DoesNotContain("secret", interceptor.Source);
+    }
+
+    [Fact]
+    public void TagAttribute_ComplexType_SkipExcludesProperties()
+    {
+        var source = """
+            using AutoInstrument;
+
+            public class Config
+            {
+                public string Region { get; set; }
+                public string Secret { get; set; }
+            }
+
+            public class MyService
+            {
+                [Tag(Skip = new[] { "Secret" })] public Config Settings { get; set; }
+
+                [Instrument]
+                public void Process(int id) { }
+            }
+
+            public class Caller
+            {
+                public void Run()
+                {
+                    var svc = new MyService();
+                    svc.Process(1);
+                }
+            }
+            """;
+
+        var results = GeneratorTestHelper.RunGenerator(source);
+
+        var interceptor = results.FirstOrDefault(r => r.HintName.Contains("Interceptors"));
+        Assert.Contains("SetTag(\"settings.region\", __self.Settings?.Region)", interceptor.Source);
+        Assert.DoesNotContain("secret", interceptor.Source);
+    }
+
+    [Fact]
+    public void TagAttribute_ComplexType_FieldsWhitelist()
+    {
+        var source = """
+            using AutoInstrument;
+
+            public class Config
+            {
+                public string Region { get; set; }
+                public int Timeout { get; set; }
+                public string Secret { get; set; }
+            }
+
+            public class MyService
+            {
+                [Tag(Fields = new[] { "Region" })] public Config Settings { get; set; }
+
+                [Instrument]
+                public void Process(int id) { }
+            }
+
+            public class Caller
+            {
+                public void Run()
+                {
+                    var svc = new MyService();
+                    svc.Process(1);
+                }
+            }
+            """;
+
+        var results = GeneratorTestHelper.RunGenerator(source);
+
+        var interceptor = results.FirstOrDefault(r => r.HintName.Contains("Interceptors"));
+        Assert.Contains("SetTag(\"settings.region\", __self.Settings?.Region)", interceptor.Source);
+        Assert.DoesNotContain("timeout", interceptor.Source);
+        Assert.DoesNotContain("secret", interceptor.Source);
+    }
+
+    [Fact]
+    public void TagAttribute_ComplexType_CustomName_UsedAsPrefix()
+    {
+        var source = """
+            using AutoInstrument;
+
+            public class Config
+            {
+                public string Region { get; set; }
+            }
+
+            public class MyService
+            {
+                [Tag(Name = "cfg")] public Config Settings { get; set; }
+
+                [Instrument]
+                public void Process(int id) { }
+            }
+
+            public class Caller
+            {
+                public void Run()
+                {
+                    var svc = new MyService();
+                    svc.Process(1);
+                }
+            }
+            """;
+
+        var results = GeneratorTestHelper.RunGenerator(source);
+
+        var interceptor = results.FirstOrDefault(r => r.HintName.Contains("Interceptors"));
+        Assert.Contains("SetTag(\"cfg.region\", __self.Settings?.Region)", interceptor.Source);
+    }
+
+    [Fact]
     public void TagNamingConvention_Flat_NoMethodPrefix()
     {
         var source = """
