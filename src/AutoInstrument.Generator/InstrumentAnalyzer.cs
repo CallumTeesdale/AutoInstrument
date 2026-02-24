@@ -1,6 +1,4 @@
-using System.Collections.Generic;
 using System.Collections.Immutable;
-using System.Linq;
 using Microsoft.CodeAnalysis;
 using Microsoft.CodeAnalysis.Diagnostics;
 
@@ -27,8 +25,16 @@ public sealed class InstrumentAnalyzer : DiagnosticAnalyzer
         defaultSeverity: DiagnosticSeverity.Warning,
         isEnabledByDefault: true);
 
+    public static readonly DiagnosticDescriptor InvalidPropertyPath = new(
+        id: "AUTOINST003",
+        title: "Invalid property in dot-notation path",
+        messageFormat: "'{0}' is not a public property of parameter '{1}' (type '{2}') in '{3}'",
+        category: "AutoInstrument",
+        defaultSeverity: DiagnosticSeverity.Warning,
+        isEnabledByDefault: true);
+
     public override ImmutableArray<DiagnosticDescriptor> SupportedDiagnostics =>
-        ImmutableArray.Create(InvalidSkipParameter, InvalidFieldsParameter);
+        [InvalidSkipParameter, InvalidFieldsParameter, InvalidPropertyPath];
 
     public override void Initialize(AnalysisContext context)
     {
@@ -45,26 +51,50 @@ public sealed class InstrumentAnalyzer : DiagnosticAnalyzer
             a.AttributeClass?.ToDisplayString() == AttributeFqn);
         if (attr is null) return;
 
-        var paramNames = new HashSet<string>(method.Parameters.Select(p => p.Name));
+        var paramsByName = method.Parameters.ToDictionary(p => p.Name, p => p);
         var methodName = $"{method.ContainingType?.Name}.{method.Name}";
 
         foreach (var arg in attr.NamedArguments)
         {
-            DiagnosticDescriptor? descriptor = arg.Key switch
+            DiagnosticDescriptor? paramDescriptor = arg.Key switch
             {
                 "Skip" => InvalidSkipParameter,
                 "Fields" => InvalidFieldsParameter,
                 _ => null
             };
-            if (descriptor is null) continue;
+            if (paramDescriptor is null) continue;
 
             foreach (var value in arg.Value.Values)
             {
-                if (value.Value is string name && !paramNames.Contains(name))
+                if (value.Value is not string name) continue;
+
+                var dotIndex = name.IndexOf('.');
+                var paramName = dotIndex >= 0 ? name.Substring(0, dotIndex) : name;
+                var propertyName = dotIndex >= 0 ? name.Substring(dotIndex + 1) : null;
+
+                var location = attr.ApplicationSyntaxReference?.GetSyntax(context.CancellationToken).GetLocation()
+                    ?? Location.None;
+
+                if (!paramsByName.TryGetValue(paramName, out var param))
                 {
-                    var location = attr.ApplicationSyntaxReference?.GetSyntax(context.CancellationToken).GetLocation()
-                        ?? Location.None;
-                    context.ReportDiagnostic(Diagnostic.Create(descriptor, location, name, methodName));
+                    context.ReportDiagnostic(Diagnostic.Create(paramDescriptor, location, name, methodName));
+                    continue;
+                }
+
+                if (propertyName is not null)
+                {
+                    var paramType = param.Type;
+                    var hasProperty = paramType.GetMembers()
+                        .OfType<IPropertySymbol>()
+                        .Any(p => p.Name == propertyName
+                                  && p is { DeclaredAccessibility: Accessibility.Public, IsStatic: false, GetMethod: not null });
+
+                    if (!hasProperty)
+                    {
+                        var typeName = paramType.ToDisplayString(SymbolDisplayFormat.MinimallyQualifiedFormat);
+                        context.ReportDiagnostic(Diagnostic.Create(
+                            InvalidPropertyPath, location, propertyName, paramName, typeName, methodName));
+                    }
                 }
             }
         }

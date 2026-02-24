@@ -50,8 +50,15 @@ internal sealed record InterceptCallSite
 internal sealed record ParameterInfo(
     string Name,
     string Type,
-    string? RefKind
+    string? RefKind,
+    bool IsComplex = false,
+    EquatableArray<PropertyMetadata> Properties = default
 ) : IEquatable<ParameterInfo>;
+
+internal sealed record PropertyMetadata(
+    string Name,
+    string Type
+) : IEquatable<PropertyMetadata>;
 
 internal readonly struct EquatableArray<T> : IEquatable<EquatableArray<T>>, IEnumerable<T>
     where T : IEquatable<T>

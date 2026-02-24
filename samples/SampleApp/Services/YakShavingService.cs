@@ -26,4 +26,14 @@ public class YakShavingService
     {
         await Task.Delay(30);
     }
+
+    [Instrument]
+    public async Task<string> ShaveNamedYak(YakInfo yakInfo)
+    {
+        await Task.Delay(50);
+        await ShaveYak(yakInfo.id, "wooly");
+        return $"Shaved {yakInfo.name}";
+    }
+
+    public record YakInfo(int id, string name);
 }

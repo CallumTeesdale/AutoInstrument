@@ -101,6 +101,74 @@ public class InstrumentAnalyzerTests
         await test.RunAsync();
     }
 
+    [Fact]
+    public async Task DotNotation_ValidPropertyName_NoDiagnostic()
+    {
+        var source = """
+            using AutoInstrument;
+
+            public class Order
+            {
+                public int Id { get; set; }
+                public string Name { get; set; }
+            }
+
+            public class MyService
+            {
+                [Instrument(Skip = new[] { "order.Name" })]
+                public void Process(Order order) { }
+            }
+            """;
+
+        var test = CreateTest(source);
+        await test.RunAsync();
+    }
+
+    [Fact]
+    public async Task DotNotation_InvalidPropertyName_ReportsDiagnostic()
+    {
+        var source = """
+            using AutoInstrument;
+
+            public class Order
+            {
+                public int Id { get; set; }
+            }
+
+            public class MyService
+            {
+                [{|#0:Instrument(Skip = new[] { "order.Nonexistent" })|}]
+                public void Process(Order order) { }
+            }
+            """;
+
+        var test = CreateTest(source);
+        test.ExpectedDiagnostics.Add(new DiagnosticResult(InstrumentAnalyzer.InvalidPropertyPath)
+            .WithLocation(0)
+            .WithArguments("Nonexistent", "order", "Order", "MyService.Process"));
+        await test.RunAsync();
+    }
+
+    [Fact]
+    public async Task DotNotation_InvalidParameterName_ReportsDiagnostic()
+    {
+        var source = """
+            using AutoInstrument;
+
+            public class MyService
+            {
+                [{|#0:Instrument(Fields = new[] { "foo.Bar" })|}]
+                public void Process(int id) { }
+            }
+            """;
+
+        var test = CreateTest(source);
+        test.ExpectedDiagnostics.Add(new DiagnosticResult(InstrumentAnalyzer.InvalidFieldsParameter)
+            .WithLocation(0)
+            .WithArguments("foo.Bar", "MyService.Process"));
+        await test.RunAsync();
+    }
+
     private static CSharpAnalyzerTest<InstrumentAnalyzer, DefaultVerifier> CreateTest(string source)
     {
         var test = new CSharpAnalyzerTest<InstrumentAnalyzer, DefaultVerifier>

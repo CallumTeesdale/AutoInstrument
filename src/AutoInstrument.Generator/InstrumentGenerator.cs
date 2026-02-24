@@ -142,18 +142,14 @@ public sealed class InstrumentGenerator : IIncrementalGenerator
             }
         }
 
-        var parameters = method.Parameters.Select(p => new ParameterInfo(
-            p.Name,
-            p.Type.ToDisplayString(SymbolDisplayFormat.FullyQualifiedFormat),
-            p.RefKind switch
+        var parameters = method.Parameters.Select(p => ExtractParameterInfo(p, refKind: p.RefKind switch
             {
                 RefKind.Ref => "ref",
                 RefKind.Out => "out",
                 RefKind.In => "in",
                 RefKind.RefReadOnlyParameter => "in",
                 _ => null
-            }
-        )).ToArray();
+            })).ToArray();
 
         return new InstrumentedMethodInfo
         {
@@ -252,17 +248,13 @@ public sealed class InstrumentGenerator : IIncrementalGenerator
             }
         }
 
-        var parameters = calledMethod.Parameters.Select(p => new ParameterInfo(
-            p.Name,
-            p.Type.ToDisplayString(SymbolDisplayFormat.FullyQualifiedFormat),
-            p.RefKind switch
+        var parameters = calledMethod.Parameters.Select(p => ExtractParameterInfo(p, refKind: p.RefKind switch
             {
                 RefKind.Ref => "ref",
                 RefKind.Out => "out",
                 RefKind.In => "in",
                 _ => null
-            }
-        )).ToArray();
+            })).ToArray();
 
         string receiverType = "";
         bool isStaticCall = calledMethod.IsStatic;
@@ -469,7 +461,7 @@ public sealed class InstrumentGenerator : IIncrementalGenerator
                 sb.AppendLine();
 
                 var taggable = method.Parameters
-                    .Where(p => ShouldTag(p, method) && p.RefKind != "out")
+                    .Where(p => ShouldTagParameter(p, method) && p.RefKind != "out")
                     .ToList();
 
                 if (taggable.Count > 0)
@@ -478,8 +470,20 @@ public sealed class InstrumentGenerator : IIncrementalGenerator
                     sb.AppendLine("            {");
                     foreach (var p in taggable)
                     {
-                        var tagName = $"{method.MethodName.ToLowerInvariant()}.{p.Name.ToLowerInvariant()}";
-                        sb.AppendLine($"                __activity.SetTag(\"{Escape(tagName)}\", {p.Name});");
+                        if (p.IsComplex && p.Properties.Length > 0)
+                        {
+                            foreach (var prop in p.Properties)
+                            {
+                                if (!ShouldTagProperty(p, prop, method)) continue;
+                                var tagName = $"{method.MethodName.ToLowerInvariant()}.{p.Name.ToLowerInvariant()}.{prop.Name.ToLowerInvariant()}";
+                                sb.AppendLine($"                __activity.SetTag(\"{Escape(tagName)}\", {p.Name}?.{prop.Name});");
+                            }
+                        }
+                        else
+                        {
+                            var tagName = $"{method.MethodName.ToLowerInvariant()}.{p.Name.ToLowerInvariant()}";
+                            sb.AppendLine($"                __activity.SetTag(\"{Escape(tagName)}\", {p.Name});");
+                        }
                     }
                     sb.AppendLine("            }");
                     sb.AppendLine();
@@ -555,12 +559,77 @@ public sealed class InstrumentGenerator : IIncrementalGenerator
         spc.AddSource("AutoInstrumentInterceptors.g.cs", SourceText.From(sb.ToString(), Encoding.UTF8));
     }
 
-    private static bool ShouldTag(ParameterInfo p, InstrumentedMethodInfo m)
+    private static bool ShouldTagParameter(ParameterInfo p, InstrumentedMethodInfo m)
     {
         if (m.Fields.Length > 0)
-            return m.Fields.Any(f => f == p.Name);
+        {
+            // Include if Fields mentions this param directly or via dot-notation
+            return m.Fields.Any(f => f == p.Name || f.StartsWith(p.Name + "."));
+        }
         if (m.Skip.Length > 0)
+        {
+            // Exclude if Skip mentions this param directly (without dot — dot means skip specific property)
             return !m.Skip.Any(s => s == p.Name);
+        }
+        return true;
+    }
+
+    private static bool ShouldTagProperty(ParameterInfo p, PropertyMetadata prop, InstrumentedMethodInfo m)
+    {
+        var dotPath = $"{p.Name}.{prop.Name}";
+        if (m.Fields.Length > 0)
+        {
+            // If Fields has dot-notation entries for this param, only include those specific properties
+            var paramDotFields = m.Fields.Where(f => f.StartsWith(p.Name + ".")).ToList();
+            if (paramDotFields.Count > 0)
+                return paramDotFields.Any(f => f == dotPath);
+            // Fields mentions param without dot → include all properties
+            return m.Fields.Any(f => f == p.Name);
+        }
+        if (m.Skip.Length > 0)
+        {
+            return !m.Skip.Any(s => s == dotPath);
+        }
+        return true;
+    }
+
+    private static ParameterInfo ExtractParameterInfo(IParameterSymbol p, string? refKind)
+    {
+        var type = p.Type;
+        var typeStr = type.ToDisplayString(SymbolDisplayFormat.FullyQualifiedFormat);
+        bool isComplex = IsComplexType(type);
+        var properties = System.Array.Empty<PropertyMetadata>();
+
+        if (isComplex)
+        {
+            properties = type.GetMembers()
+                .OfType<IPropertySymbol>()
+                .Where(prop => prop.DeclaredAccessibility == Accessibility.Public
+                    && !prop.IsStatic
+                    && !prop.IsIndexer
+                    && prop.GetMethod is not null)
+                .Select(prop => new PropertyMetadata(
+                    prop.Name,
+                    prop.Type.ToDisplayString(SymbolDisplayFormat.FullyQualifiedFormat)))
+                .ToArray();
+        }
+
+        return new ParameterInfo(
+            p.Name,
+            typeStr,
+            refKind,
+            isComplex,
+            new EquatableArray<PropertyMetadata>(properties));
+    }
+
+    private static bool IsComplexType(ITypeSymbol type)
+    {
+        if (type.SpecialType != SpecialType.None) return false;
+        var name = type.ToDisplayString();
+        if (name is "decimal" or "System.Decimal"
+                or "System.DateTime" or "System.DateTimeOffset"
+                or "System.TimeSpan" or "System.Guid") return false;
+        if (type.TypeKind == TypeKind.Enum) return false;
         return true;
     }
 

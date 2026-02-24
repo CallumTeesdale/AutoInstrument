@@ -554,4 +554,184 @@ public class InstrumentGeneratorTests
         Assert.DoesNotContain("FromMsBuild", interceptor.Source);
         Assert.DoesNotContain("FromAttribute", interceptor.Source);
     }
+
+    [Fact]
+    public void ComplexType_AutoExpandsPublicProperties()
+    {
+        var source = """
+            using AutoInstrument;
+
+            public class Order
+            {
+                public int Id { get; set; }
+                public string Name { get; set; }
+                private string Secret { get; set; }
+            }
+
+            public class MyService
+            {
+                [Instrument]
+                public void Process(Order order) { }
+            }
+
+            public class Caller
+            {
+                public void Run()
+                {
+                    var svc = new MyService();
+                    svc.Process(new Order());
+                }
+            }
+            """;
+
+        var results = GeneratorTestHelper.RunGenerator(source);
+
+        var interceptor = results.FirstOrDefault(r => r.HintName.Contains("Interceptors"));
+        // Should expand public properties
+        Assert.Contains("process.order.id", interceptor.Source);
+        Assert.Contains("process.order.name", interceptor.Source);
+        Assert.Contains("order?.Id", interceptor.Source);
+        Assert.Contains("order?.Name", interceptor.Source);
+        // Private property should not be expanded
+        Assert.DoesNotContain("secret", interceptor.Source);
+    }
+
+    [Fact]
+    public void ComplexType_SkipDotNotation_SkipsSpecificProperty()
+    {
+        var source = """
+            using AutoInstrument;
+
+            public class Order
+            {
+                public int Id { get; set; }
+                public string CreditCard { get; set; }
+            }
+
+            public class MyService
+            {
+                [Instrument(Skip = new[] { "order.CreditCard" })]
+                public void Process(Order order) { }
+            }
+
+            public class Caller
+            {
+                public void Run()
+                {
+                    var svc = new MyService();
+                    svc.Process(new Order());
+                }
+            }
+            """;
+
+        var results = GeneratorTestHelper.RunGenerator(source);
+
+        var interceptor = results.FirstOrDefault(r => r.HintName.Contains("Interceptors"));
+        Assert.Contains("process.order.id", interceptor.Source);
+        Assert.DoesNotContain("creditcard", interceptor.Source);
+    }
+
+    [Fact]
+    public void ComplexType_FieldsDotNotation_OnlyTagsSpecifiedProperties()
+    {
+        var source = """
+            using AutoInstrument;
+
+            public class Order
+            {
+                public int Id { get; set; }
+                public string Name { get; set; }
+                public string Secret { get; set; }
+            }
+
+            public class MyService
+            {
+                [Instrument(Fields = new[] { "order.Id" })]
+                public void Process(Order order) { }
+            }
+
+            public class Caller
+            {
+                public void Run()
+                {
+                    var svc = new MyService();
+                    svc.Process(new Order());
+                }
+            }
+            """;
+
+        var results = GeneratorTestHelper.RunGenerator(source);
+
+        var interceptor = results.FirstOrDefault(r => r.HintName.Contains("Interceptors"));
+        Assert.Contains("process.order.id", interceptor.Source);
+        Assert.DoesNotContain("process.order.name", interceptor.Source);
+        Assert.DoesNotContain("process.order.secret", interceptor.Source);
+    }
+
+    [Fact]
+    public void PrimitiveType_NotExpanded()
+    {
+        var source = """
+            using AutoInstrument;
+
+            public class MyService
+            {
+                [Instrument]
+                public void Process(int id, string name) { }
+            }
+
+            public class Caller
+            {
+                public void Run()
+                {
+                    var svc = new MyService();
+                    svc.Process(1, "test");
+                }
+            }
+            """;
+
+        var results = GeneratorTestHelper.RunGenerator(source);
+
+        var interceptor = results.FirstOrDefault(r => r.HintName.Contains("Interceptors"));
+        // Primitives should be tagged directly, not expanded
+        Assert.Contains("SetTag(\"process.id\", id)", interceptor.Source);
+        Assert.Contains("SetTag(\"process.name\", name)", interceptor.Source);
+    }
+
+    [Fact]
+    public void ComplexType_SkipEntireParameter_NoTags()
+    {
+        var source = """
+            using AutoInstrument;
+
+            public class Order
+            {
+                public int Id { get; set; }
+                public string Name { get; set; }
+            }
+
+            public class MyService
+            {
+                [Instrument(Skip = new[] { "order" })]
+                public void Process(Order order, int id) { }
+            }
+
+            public class Caller
+            {
+                public void Run()
+                {
+                    var svc = new MyService();
+                    svc.Process(new Order(), 1);
+                }
+            }
+            """;
+
+        var results = GeneratorTestHelper.RunGenerator(source);
+
+        var interceptor = results.FirstOrDefault(r => r.HintName.Contains("Interceptors"));
+        // order should be entirely skipped
+        Assert.DoesNotContain("process.order", interceptor.Source);
+        // id should still be tagged
+        Assert.Contains("process.id", interceptor.Source);
+    }
 }
