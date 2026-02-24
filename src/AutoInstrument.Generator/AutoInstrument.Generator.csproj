@@ -10,6 +10,7 @@
     <PackageId>AutoInstrument</PackageId>
     <Version>1.0.0</Version>
     <Description>Rust-style #[instrument] for .NET — automatic OpenTelemetry tracing via source generators and interceptors</Description>
+    <PackageReadmeFile>README.md</PackageReadmeFile>
 
     <!-- Source generator packaging -->
     <IncludeBuildOutput>false</IncludeBuildOutput>
