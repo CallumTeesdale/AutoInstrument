@@ -42,7 +42,7 @@ public decimal ComputeTotal(List<LineItem> items) => items.Sum(i => i.Price * i.
 |---|---|-----------------------------------------------------------------------|
 | `Name` | `Class.Method` | Span name                                                             |
 | `Skip` | — | Parameters/properties to exclude from tags                            |
-| `Fields` | — | Whitelist - only these become tags                                    |
+| `Fields` | — | Whitelist -D only these become tags                                   |
 | `ActivitySourceName` | Assembly name | Custom ActivitySource name                                            |
 | `RecordReturnValue` | `false` | Tag the return value                                                  |
 | `RecordException` | `true` | Record exceptions on the span                                         |
@@ -51,8 +51,9 @@ public decimal ComputeTotal(List<LineItem> items) => items.Sum(i => i.Price * i.
 | `IgnoreCancellation` | `true` | Don't record `OperationCanceledException` as errors                   |
 | `Condition` | — | Boolean member name - skip instrumentation when `false`               |
 | `LinkTo` | — | Parameter name (must be `ActivityContext`) to attach as ActivityLink  |
+| `Depth` | Global default (1) | Max depth for expanding complex type properties                       |
 
-`Skip` and `Fields` support dot-notation for complex type properties: `Skip = new[] { "order.CreditCard" }`.
+`Skip` and `Fields` support dot-notation at any depth: `Skip = new[] { "order.Address.City" }`.
 
 ## Parameter attributes
 
@@ -80,27 +81,39 @@ public class OrderService
 }
 ```
 
-Complex types are expanded one level deep, just like method parameters. Use `Skip` or `Fields` to control which properties become tags:
+Complex types are expanded recursively, just like method parameters. Use `Skip`, `Fields`, or `Depth` to control expansion:
 
 ```csharp
 public class OrderService
 {
     [Tag(Skip = new[] { "Secret" })] public Config Settings { get; set; }
     [Tag(Fields = new[] { "Region" })] public Config Backup { get; set; }
+    [Tag(Depth = 1)] public Config Shallow { get; set; }
     // Settings → settings.region, settings.timeout (Secret excluded)
     // Backup   → backup.region (only Region included)
+    // Shallow  → one level only
 }
 ```
 
 ## Complex types
 
-Classes and structs are expanded one level deep into their public properties:
+Classes and structs are expanded one level deep by default. Dot-notation in `Skip` or `Fields` automatically resolves deeper — no need to increase `Depth` manually:
 
 ```csharp
 [Instrument]
-public void Process(Order order, int priority) { ... }
-// Tags: process.order.id, process.order.customer, process.order.creditcard, process.priority
+public void Process(Order order) { ... }
+// Tags: process.order.id, process.order.address (1 level deep)
+
+[Instrument(Fields = new[] { "order.Address.City" })]
+public void Targeted(Order order) { ... }
+// Tags: process.order.address.city (auto-resolved to reach City)
+
+[Instrument(Depth = 3)]
+public void Deep(Order order) { ... }
+// Tags: process.order.id, process.order.address.city, process.order.address.zip (fully expanded)
 ```
+
+Circular references are detected and stopped automatically. Collections (arrays, `List<T>`, etc.) are not expanded — they are tagged as-is.
 
 ## Configuration
 
@@ -117,6 +130,14 @@ Tag naming defaults to `methodname.param`. Set it to `Flat` for just `param`:
 ```
 
 Or via MSBuild: `<AutoInstrumentTagNaming>Flat</AutoInstrumentTagNaming>`
+
+The default expansion depth is 1. Dot-notation in `Skip`/`Fields` auto-resolves deeper. Override globally:
+
+```csharp
+[assembly: AutoInstrumentConfig(Depth = 2)]
+```
+
+Or via MSBuild: `<AutoInstrumentDepth>2</AutoInstrumentDepth>`
 
 ## Diagnostics
 
@@ -135,7 +156,7 @@ Or via MSBuild: `<AutoInstrumentTagNaming>Flat</AutoInstrumentTagNaming>`
 
 - Interceptors only work within the same compilation — cross-project calls aren't intercepted.
 - Recursive calls create nested spans.
-- Complex types expand one level deep only.
+- Complex types expand up to the configured depth (default 1). Dot-notation auto-resolves deeper. Collections are not expanded.
 
 ## Requirements
 

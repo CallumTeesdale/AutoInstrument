@@ -16,4 +16,7 @@ public sealed class TagAttribute : Attribute
 
     /// <summary>Whitelist of properties to include as tags when the member is a complex type. Takes precedence over <see cref="Skip"/>.</summary>
     public string[]? Fields { get; set; }
+
+    /// <summary>Max depth for expanding complex type properties. -1 uses the global default (1). Dot-notation in Skip/Fields auto-resolves deeper.</summary>
+    public int Depth { get; set; } = -1;
 }

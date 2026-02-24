@@ -42,6 +42,7 @@ internal sealed record InstrumentedMethodInfo
     public string? LinkTo { get; init; }
     public EquatableArray<TagMemberInfo> TagMembers { get; init; } = new(Array.Empty<TagMemberInfo>());
     public int TagNamingConvention { get; init; } // 0=Method, 1=Flat, 2=OTel
+    public int Depth { get; init; } = 1;
 }
 
 internal sealed record InterceptCallSite
@@ -67,7 +68,9 @@ internal sealed record ParameterInfo(
 
 internal sealed record PropertyMetadata(
     string Name,
-    string Type
+    string Type,
+    bool IsComplex = false,
+    EquatableArray<PropertyMetadata> Properties = default
 ) : IEquatable<PropertyMetadata>;
 
 internal sealed record TagMemberInfo(
@@ -77,7 +80,8 @@ internal sealed record TagMemberInfo(
     bool IsComplex = false,
     EquatableArray<PropertyMetadata> Properties = default,
     EquatableArray<string> Skip = default,
-    EquatableArray<string> Fields = default
+    EquatableArray<string> Fields = default,
+    int Depth = 1
 ) : IEquatable<TagMemberInfo>;
 
 internal readonly struct EquatableArray<T> : IEquatable<EquatableArray<T>>, IEnumerable<T>

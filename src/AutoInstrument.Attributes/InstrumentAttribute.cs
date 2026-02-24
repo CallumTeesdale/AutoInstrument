@@ -41,4 +41,7 @@ public sealed class InstrumentAttribute : Attribute
 
     /// <summary>Parameter name of type ActivityContext to add as an ActivityLink.</summary>
     public string? LinkTo { get; set; }
+
+    /// <summary>Max depth for expanding complex type properties. -1 uses the global default (1). Dot-notation in Skip/Fields auto-resolves deeper.</summary>
+    public int Depth { get; set; } = -1;
 }

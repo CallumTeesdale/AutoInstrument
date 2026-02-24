@@ -1068,6 +1068,579 @@ public class InstrumentGeneratorTests
     }
 
     [Fact]
+    public void RecursiveExpansion_TwoLevelsDeep()
+    {
+        var source = """
+            using AutoInstrument;
+
+            public class Address
+            {
+                public string City { get; set; }
+                public string Zip { get; set; }
+            }
+
+            public class Order
+            {
+                public int Id { get; set; }
+                public Address Address { get; set; }
+            }
+
+            public class MyService
+            {
+                [Instrument(Depth = 2)]
+                public void Process(Order order) { }
+            }
+
+            public class Caller
+            {
+                public void Run()
+                {
+                    var svc = new MyService();
+                    svc.Process(new Order());
+                }
+            }
+            """;
+
+        var results = GeneratorTestHelper.RunGenerator(source);
+
+        var interceptor = results.FirstOrDefault(r => r.HintName.Contains("Interceptors"));
+        Assert.Contains("process.order.id", interceptor.Source);
+        Assert.Contains("process.order.address.city", interceptor.Source);
+        Assert.Contains("process.order.address.zip", interceptor.Source);
+        Assert.Contains("order?.Address?.City", interceptor.Source);
+        Assert.Contains("order?.Address?.Zip", interceptor.Source);
+    }
+
+    [Fact]
+    public void RecursiveExpansion_RespectsDepthLimit()
+    {
+        var source = """
+            using AutoInstrument;
+
+            public class Address
+            {
+                public string City { get; set; }
+            }
+
+            public class Order
+            {
+                public int Id { get; set; }
+                public Address Address { get; set; }
+            }
+
+            public class MyService
+            {
+                [Instrument(Depth = 1)]
+                public void Process(Order order) { }
+            }
+
+            public class Caller
+            {
+                public void Run()
+                {
+                    var svc = new MyService();
+                    svc.Process(new Order());
+                }
+            }
+            """;
+
+        var results = GeneratorTestHelper.RunGenerator(source);
+
+        var interceptor = results.FirstOrDefault(r => r.HintName.Contains("Interceptors"));
+        Assert.Contains("process.order.id", interceptor.Source);
+        Assert.Contains("process.order.address", interceptor.Source);
+        Assert.DoesNotContain("process.order.address.city", interceptor.Source);
+    }
+
+    [Fact]
+    public void RecursiveExpansion_CircularReference_Stops()
+    {
+        var source = """
+            using AutoInstrument;
+
+            public class Node
+            {
+                public int Value { get; set; }
+                public Node Parent { get; set; }
+            }
+
+            public class MyService
+            {
+                [Instrument]
+                public void Process(Node node) { }
+            }
+
+            public class Caller
+            {
+                public void Run()
+                {
+                    var svc = new MyService();
+                    svc.Process(new Node());
+                }
+            }
+            """;
+
+        var results = GeneratorTestHelper.RunGenerator(source);
+
+        var interceptor = results.FirstOrDefault(r => r.HintName.Contains("Interceptors"));
+        Assert.Contains("process.node.value", interceptor.Source);
+        Assert.DoesNotContain("process.node.parent.parent", interceptor.Source);
+    }
+
+    [Fact]
+    public void RecursiveExpansion_Collection_NotExpanded()
+    {
+        var source = """
+            using AutoInstrument;
+            using System.Collections.Generic;
+
+            public class Item
+            {
+                public int Id { get; set; }
+            }
+
+            public class Order
+            {
+                public int Id { get; set; }
+                public List<Item> Items { get; set; }
+            }
+
+            public class MyService
+            {
+                [Instrument]
+                public void Process(Order order) { }
+            }
+
+            public class Caller
+            {
+                public void Run()
+                {
+                    var svc = new MyService();
+                    svc.Process(new Order());
+                }
+            }
+            """;
+
+        var results = GeneratorTestHelper.RunGenerator(source);
+
+        var interceptor = results.FirstOrDefault(r => r.HintName.Contains("Interceptors"));
+        Assert.Contains("process.order.id", interceptor.Source);
+        Assert.Contains("process.order.items", interceptor.Source);
+        Assert.DoesNotContain("process.order.items.id", interceptor.Source);
+    }
+
+    [Fact]
+    public void RecursiveExpansion_DeepSkipDotNotation()
+    {
+        var source = """
+            using AutoInstrument;
+
+            public class Address
+            {
+                public string City { get; set; }
+                public string Secret { get; set; }
+            }
+
+            public class Order
+            {
+                public int Id { get; set; }
+                public Address Address { get; set; }
+            }
+
+            public class MyService
+            {
+                [Instrument(Skip = new[] { "order.Address.Secret" })]
+                public void Process(Order order) { }
+            }
+
+            public class Caller
+            {
+                public void Run()
+                {
+                    var svc = new MyService();
+                    svc.Process(new Order());
+                }
+            }
+            """;
+
+        var results = GeneratorTestHelper.RunGenerator(source);
+
+        var interceptor = results.FirstOrDefault(r => r.HintName.Contains("Interceptors"));
+        Assert.Contains("process.order.address.city", interceptor.Source);
+        Assert.DoesNotContain("secret", interceptor.Source);
+    }
+
+    [Fact]
+    public void RecursiveExpansion_DeepFieldsDotNotation()
+    {
+        var source = """
+            using AutoInstrument;
+
+            public class Address
+            {
+                public string City { get; set; }
+                public string Secret { get; set; }
+            }
+
+            public class Order
+            {
+                public int Id { get; set; }
+                public Address Address { get; set; }
+            }
+
+            public class MyService
+            {
+                [Instrument(Fields = new[] { "order.Address.City" })]
+                public void Process(Order order) { }
+            }
+
+            public class Caller
+            {
+                public void Run()
+                {
+                    var svc = new MyService();
+                    svc.Process(new Order());
+                }
+            }
+            """;
+
+        var results = GeneratorTestHelper.RunGenerator(source);
+
+        var interceptor = results.FirstOrDefault(r => r.HintName.Contains("Interceptors"));
+        Assert.Contains("process.order.address.city", interceptor.Source);
+        Assert.DoesNotContain("secret", interceptor.Source);
+        Assert.DoesNotContain("process.order.id", interceptor.Source);
+    }
+
+    [Fact]
+    public void TagAttribute_RecursiveExpansion()
+    {
+        var source = """
+            using AutoInstrument;
+
+            public class Address
+            {
+                public string City { get; set; }
+                public string Zip { get; set; }
+            }
+
+            public class Config
+            {
+                public string Region { get; set; }
+                public Address Office { get; set; }
+            }
+
+            public class MyService
+            {
+                [Tag(Depth = 2)] public Config Settings { get; set; }
+
+                [Instrument]
+                public void Process(int id) { }
+            }
+
+            public class Caller
+            {
+                public void Run()
+                {
+                    var svc = new MyService();
+                    svc.Process(1);
+                }
+            }
+            """;
+
+        var results = GeneratorTestHelper.RunGenerator(source);
+
+        var interceptor = results.FirstOrDefault(r => r.HintName.Contains("Interceptors"));
+        Assert.Contains("settings.region", interceptor.Source);
+        Assert.Contains("settings.office.city", interceptor.Source);
+        Assert.Contains("settings.office.zip", interceptor.Source);
+        Assert.Contains("__self.Settings?.Office?.City", interceptor.Source);
+    }
+
+    [Fact]
+    public void TagAttribute_Depth_OverridesDefault()
+    {
+        var source = """
+            using AutoInstrument;
+
+            public class Address
+            {
+                public string City { get; set; }
+            }
+
+            public class Config
+            {
+                public string Region { get; set; }
+                public Address Office { get; set; }
+            }
+
+            public class MyService
+            {
+                [Tag(Depth = 1)] public Config Settings { get; set; }
+
+                [Instrument]
+                public void Process(int id) { }
+            }
+
+            public class Caller
+            {
+                public void Run()
+                {
+                    var svc = new MyService();
+                    svc.Process(1);
+                }
+            }
+            """;
+
+        var results = GeneratorTestHelper.RunGenerator(source);
+
+        var interceptor = results.FirstOrDefault(r => r.HintName.Contains("Interceptors"));
+        Assert.Contains("settings.region", interceptor.Source);
+        Assert.Contains("settings.office", interceptor.Source);
+        Assert.DoesNotContain("settings.office.city", interceptor.Source);
+    }
+
+    [Fact]
+    public void Depth_PerMethod_OverridesGlobal()
+    {
+        var source = """
+            using AutoInstrument;
+
+            [assembly: AutoInstrumentConfig(Depth = 1)]
+
+            public class Address
+            {
+                public string City { get; set; }
+            }
+
+            public class Order
+            {
+                public int Id { get; set; }
+                public Address Address { get; set; }
+            }
+
+            public class MyService
+            {
+                [Instrument(Depth = 2)]
+                public void Process(Order order) { }
+            }
+
+            public class Caller
+            {
+                public void Run()
+                {
+                    var svc = new MyService();
+                    svc.Process(new Order());
+                }
+            }
+            """;
+
+        var results = GeneratorTestHelper.RunGenerator(source);
+
+        var interceptor = results.FirstOrDefault(r => r.HintName.Contains("Interceptors"));
+        Assert.Contains("process.order.address.city", interceptor.Source);
+    }
+
+    [Fact]
+    public void DotNotation_Fields_AutoResolvesDepth()
+    {
+        var source = """
+            using AutoInstrument;
+
+            public class Address
+            {
+                public string City { get; set; }
+                public string Zip { get; set; }
+            }
+
+            public class Order
+            {
+                public int Id { get; set; }
+                public Address Address { get; set; }
+            }
+
+            public class MyService
+            {
+                [Instrument(Fields = new[] { "order.Address.City" })]
+                public void Process(Order order) { }
+            }
+
+            public class Caller
+            {
+                public void Run()
+                {
+                    var svc = new MyService();
+                    svc.Process(new Order());
+                }
+            }
+            """;
+
+        var results = GeneratorTestHelper.RunGenerator(source);
+
+        var interceptor = results.FirstOrDefault(r => r.HintName.Contains("Interceptors"));
+        // Fields auto-resolves past default depth of 1
+        Assert.Contains("process.order.address.city", interceptor.Source);
+        Assert.DoesNotContain("zip", interceptor.Source);
+        Assert.DoesNotContain("process.order.id", interceptor.Source);
+    }
+
+    [Fact]
+    public void DotNotation_Skip_AutoResolvesDepth()
+    {
+        var source = """
+            using AutoInstrument;
+
+            public class Address
+            {
+                public string City { get; set; }
+                public string Secret { get; set; }
+            }
+
+            public class Order
+            {
+                public int Id { get; set; }
+                public Address Address { get; set; }
+            }
+
+            public class MyService
+            {
+                [Instrument(Skip = new[] { "order.Address.Secret" })]
+                public void Process(Order order) { }
+            }
+
+            public class Caller
+            {
+                public void Run()
+                {
+                    var svc = new MyService();
+                    svc.Process(new Order());
+                }
+            }
+            """;
+
+        var results = GeneratorTestHelper.RunGenerator(source);
+
+        var interceptor = results.FirstOrDefault(r => r.HintName.Contains("Interceptors"));
+        // Skip auto-resolves past default depth of 1
+        Assert.Contains("process.order.id", interceptor.Source);
+        Assert.Contains("process.order.address.city", interceptor.Source);
+        Assert.DoesNotContain("secret", interceptor.Source);
+    }
+
+    [Fact]
+    public void TagAttribute_DotNotation_Fields_AutoResolvesDepth()
+    {
+        var source = """
+            using AutoInstrument;
+
+            public class Address
+            {
+                public string City { get; set; }
+                public string Zip { get; set; }
+            }
+
+            public class Config
+            {
+                public string Region { get; set; }
+                public Address Office { get; set; }
+            }
+
+            public class MyService
+            {
+                [Tag(Fields = new[] { "Office.City" })] public Config Settings { get; set; }
+
+                [Instrument]
+                public void Process(int id) { }
+            }
+
+            public class Caller
+            {
+                public void Run()
+                {
+                    var svc = new MyService();
+                    svc.Process(1);
+                }
+            }
+            """;
+
+        var results = GeneratorTestHelper.RunGenerator(source);
+
+        var interceptor = results.FirstOrDefault(r => r.HintName.Contains("Interceptors"));
+        Assert.Contains("settings.office.city", interceptor.Source);
+        Assert.DoesNotContain("region", interceptor.Source);
+        Assert.DoesNotContain("zip", interceptor.Source);
+    }
+
+    [Fact]
+    public void DefaultDepth1_OnlyExpandsOneLevel()
+    {
+        var source = """
+            using AutoInstrument;
+
+            public class Address
+            {
+                public string City { get; set; }
+            }
+
+            public class Order
+            {
+                public int Id { get; set; }
+                public Address Address { get; set; }
+            }
+
+            public class MyService
+            {
+                [Instrument]
+                public void Process(Order order) { }
+            }
+
+            public class Caller
+            {
+                public void Run()
+                {
+                    var svc = new MyService();
+                    svc.Process(new Order());
+                }
+            }
+            """;
+
+        var results = GeneratorTestHelper.RunGenerator(source);
+
+        var interceptor = results.FirstOrDefault(r => r.HintName.Contains("Interceptors"));
+        Assert.Contains("process.order.id", interceptor.Source);
+        Assert.Contains("process.order.address", interceptor.Source);
+        Assert.DoesNotContain("process.order.address.city", interceptor.Source);
+    }
+
+    [Fact]
+    public void Array_NotExpanded()
+    {
+        var source = """
+            using AutoInstrument;
+
+            public class MyService
+            {
+                [Instrument]
+                public void Process(int[] ids) { }
+            }
+
+            public class Caller
+            {
+                public void Run()
+                {
+                    var svc = new MyService();
+                    svc.Process(new[] { 1, 2 });
+                }
+            }
+            """;
+
+        var results = GeneratorTestHelper.RunGenerator(source);
+
+        var interceptor = results.FirstOrDefault(r => r.HintName.Contains("Interceptors"));
+        Assert.Contains("SetTag(\"process.ids\", ids)", interceptor.Source);
+    }
+
+    [Fact]
     public void TagNamingConvention_Flat_NoMethodPrefix()
     {
         var source = """

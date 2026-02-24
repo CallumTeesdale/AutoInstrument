@@ -20,6 +20,8 @@ public sealed class InstrumentGenerator : IIncrementalGenerator
     private const string TagAttributeFqn = "AutoInstrument.TagAttribute";
     private const string MsBuildPropertyName = "build_property.AutoInstrumentSourceName";
     private const string MsBuildTagNamingPropertyName = "build_property.AutoInstrumentTagNaming";
+    private const string MsBuildDepthPropertyName = "build_property.AutoInstrumentDepth";
+    private const int DefaultDepth = 1;
 
     public void Initialize(IncrementalGeneratorInitializationContext context)
     {
@@ -103,27 +105,59 @@ public sealed class InstrumentGenerator : IIncrementalGenerator
         var tagNaming = msBuildTagNaming.Combine(assemblyTagNaming)
             .Select(static (pair, _) => pair.Left ?? pair.Right ?? 0);
 
+        var assemblyDepth = context.SyntaxProvider
+            .ForAttributeWithMetadataName(
+                ConfigAttributeFqn,
+                predicate: static (node, _) => node is CompilationUnitSyntax,
+                transform: static (ctx, _) =>
+                {
+                    var attr = ctx.Attributes.FirstOrDefault(a =>
+                        a.AttributeClass?.ToDisplayString() == ConfigAttributeFqn);
+                    if (attr is null) return (int?)null;
+                    foreach (var arg in attr.NamedArguments)
+                    {
+                        if (arg.Key == "Depth" && arg.Value.Value is int val)
+                            return val;
+                    }
+                    return null;
+                })
+            .Where(static x => x is not null)
+            .Collect()
+            .Select(static (arr, _) => arr.IsDefaultOrEmpty ? (int?)null : arr[0]);
+
+        var msBuildDepth = context.AnalyzerConfigOptionsProvider
+            .Select(static (provider, _) =>
+            {
+                provider.GlobalOptions.TryGetValue(MsBuildDepthPropertyName, out var value);
+                if (string.IsNullOrWhiteSpace(value)) return (int?)null;
+                return int.TryParse(value!.Trim(), out var d) ? d : (int?)null;
+            });
+
+        var resolvedDepth = msBuildDepth.Combine(assemblyDepth)
+            .Select(static (pair, _) => pair.Left ?? pair.Right ?? DefaultDepth);
+
         var combined = collectedMethods
             .Combine(collectedCallSites)
             .Combine(defaultName)
-            .Combine(tagNaming);
+            .Combine(tagNaming)
+            .Combine(resolvedDepth);
 
         context.RegisterSourceOutput(combined, static (spc, pair) =>
         {
-            var (((methods, sites), resolvedDefault), resolvedTagNaming) = pair;
+            var ((((methods, sites), resolvedDefault), resolvedTagNaming), resolvedGlobalDepth) = pair;
             if (methods.IsDefaultOrEmpty && sites.IsDefaultOrEmpty) return;
-            EmitCombinedFile(spc, methods, sites, resolvedDefault, resolvedTagNaming);
+            EmitCombinedFile(spc, methods, sites, resolvedDefault, resolvedTagNaming, resolvedGlobalDepth);
         });
     }
 
     private static (string? spanName, string? activitySourceName, string[] skip, string[] fields,
         bool recordReturnValue, bool recordException, int kind, bool recordSuccess,
-        bool ignoreCancellation, string? condition, string? linkTo) ParseInstrumentAttribute(AttributeData attr)
+        bool ignoreCancellation, string? condition, string? linkTo, int depth) ParseInstrumentAttribute(AttributeData attr)
     {
         string? spanName = null, activitySourceName = null, condition = null, linkTo = null;
         string[] skip = System.Array.Empty<string>(), fields = System.Array.Empty<string>();
         bool recordReturnValue = false, recordException = true, recordSuccess = false, ignoreCancellation = true;
-        int kind = 0;
+        int kind = 0, depth = -1;
 
         foreach (var arg in attr.NamedArguments)
         {
@@ -138,6 +172,7 @@ public sealed class InstrumentGenerator : IIncrementalGenerator
                 case "IgnoreCancellation": ignoreCancellation = arg.Value.Value is not false; break;
                 case "Condition": condition = arg.Value.Value as string; break;
                 case "LinkTo": linkTo = arg.Value.Value as string; break;
+                case "Depth": depth = (int)(arg.Value.Value ?? -1); break;
                 case "Skip":
                     skip = arg.Value.Values.Select(v => v.Value as string).Where(v => v != null).ToArray()!;
                     break;
@@ -148,7 +183,7 @@ public sealed class InstrumentGenerator : IIncrementalGenerator
         }
 
         return (spanName, activitySourceName, skip, fields, recordReturnValue, recordException, kind,
-            recordSuccess, ignoreCancellation, condition, linkTo);
+            recordSuccess, ignoreCancellation, condition, linkTo, depth);
     }
 
     private static InstrumentedMethodInfo? ExtractMethodInfo(
@@ -189,6 +224,7 @@ public sealed class InstrumentGenerator : IIncrementalGenerator
             }
         }
 
+        var methodDepth = parsed.depth >= 0 ? parsed.depth : DefaultDepth;
         var parameters = method.Parameters.Select(p => ExtractParameterInfo(p, refKind: p.RefKind switch
             {
                 RefKind.Ref => "ref",
@@ -196,7 +232,7 @@ public sealed class InstrumentGenerator : IIncrementalGenerator
                 RefKind.In => "in",
                 RefKind.RefReadOnlyParameter => "in",
                 _ => null
-            })).ToArray();
+            }, depth: methodDepth, skip: parsed.skip, fields: parsed.fields)).ToArray();
 
         var tagMembers = ExtractTagMembers(containingType);
 
@@ -227,9 +263,9 @@ public sealed class InstrumentGenerator : IIncrementalGenerator
             RecordSuccess = parsed.recordSuccess,
             IgnoreCancellation = parsed.ignoreCancellation,
             Condition = parsed.condition,
-
             LinkTo = parsed.linkTo,
             TagMembers = new EquatableArray<TagMemberInfo>(tagMembers),
+            Depth = parsed.depth,
         };
     }
 
@@ -280,13 +316,14 @@ public sealed class InstrumentGenerator : IIncrementalGenerator
             }
         }
 
+        var callSiteDepth = parsed.depth >= 0 ? parsed.depth : DefaultDepth;
         var parameters = calledMethod.Parameters.Select(p => ExtractParameterInfo(p, refKind: p.RefKind switch
             {
                 RefKind.Ref => "ref",
                 RefKind.Out => "out",
                 RefKind.In => "in",
                 _ => null
-            })).ToArray();
+            }, depth: callSiteDepth, skip: parsed.skip, fields: parsed.fields)).ToArray();
 
         var tagMembers = containingType is not null ? ExtractTagMembers(containingType) : System.Array.Empty<TagMemberInfo>();
 
@@ -324,9 +361,9 @@ public sealed class InstrumentGenerator : IIncrementalGenerator
             RecordSuccess = parsed.recordSuccess,
             IgnoreCancellation = parsed.ignoreCancellation,
             Condition = parsed.condition,
-
             LinkTo = parsed.linkTo,
             TagMembers = new EquatableArray<TagMemberInfo>(tagMembers),
+            Depth = parsed.depth,
         };
 
         return new InterceptCallSite
@@ -345,9 +382,9 @@ public sealed class InstrumentGenerator : IIncrementalGenerator
         ImmutableArray<InstrumentedMethodInfo?> methods,
         ImmutableArray<InterceptCallSite?> sites,
         string? defaultActivitySourceName = null,
-        int tagNamingConvention = 0)
+        int tagNamingConvention = 0,
+        int globalDepth = DefaultDepth)
     {
-        if (defaultActivitySourceName is not null || tagNamingConvention != 0)
         {
             methods = methods.Select(m =>
             {
@@ -357,6 +394,8 @@ public sealed class InstrumentGenerator : IIncrementalGenerator
                     updated = updated with { DefaultActivitySourceName = defaultActivitySourceName };
                 if (tagNamingConvention != 0)
                     updated = updated with { TagNamingConvention = tagNamingConvention };
+                if (m.Depth < 0)
+                    updated = updated with { Depth = globalDepth };
                 return updated;
             }).ToImmutableArray();
 
@@ -368,6 +407,8 @@ public sealed class InstrumentGenerator : IIncrementalGenerator
                     updatedMethod = updatedMethod with { DefaultActivitySourceName = defaultActivitySourceName };
                 if (tagNamingConvention != 0)
                     updatedMethod = updatedMethod with { TagNamingConvention = tagNamingConvention };
+                if (s.Method.Depth < 0)
+                    updatedMethod = updatedMethod with { Depth = globalDepth };
                 return updatedMethod == s.Method ? s : s with { Method = updatedMethod };
             }).ToImmutableArray();
         }
@@ -550,12 +591,9 @@ public sealed class InstrumentGenerator : IIncrementalGenerator
                     {
                         if (p.IsComplex && p.Properties.Length > 0)
                         {
-                            foreach (var prop in p.Properties)
-                            {
-                                if (!ShouldTagProperty(p, prop, method)) continue;
-                                var tagName = FormatTagName(method.MethodName, p.Name, prop.Name, method.TagNamingConvention);
-                                sb.AppendLine($"                __activity.SetTag(\"{Escape(tagName)}\", {p.Name}?.{prop.Name});");
-                            }
+                            EmitPropertyTags(sb, p.Name, p.Name, p.Properties,
+                                method.Skip, method.Fields, p.NoInstrumentProperties,
+                                method.MethodName, method.TagNamingConvention);
                         }
                         else
                         {
@@ -567,13 +605,9 @@ public sealed class InstrumentGenerator : IIncrementalGenerator
                     {
                         if (tm.IsComplex && tm.Properties.Length > 0)
                         {
-                            foreach (var prop in tm.Properties)
-                            {
-                                if (!ShouldTagTagMemberProperty(tm, prop)) continue;
-                                var baseName = tm.TagName ?? tm.MemberName.ToLowerInvariant();
-                                var tagName = $"{baseName}.{prop.Name.ToLowerInvariant()}";
-                                sb.AppendLine($"                __activity.SetTag(\"{Escape(tagName)}\", __self.{tm.MemberName}?.{prop.Name});");
-                            }
+                            var baseName = tm.TagName ?? tm.MemberName.ToLowerInvariant();
+                            EmitTagMemberPropertyTags(sb, $"__self.{tm.MemberName}", baseName,
+                                tm.Properties, tm.Skip, tm.Fields);
                         }
                         else
                         {
@@ -719,58 +753,169 @@ public sealed class InstrumentGenerator : IIncrementalGenerator
         return true;
     }
 
-    private static bool ShouldTagProperty(ParameterInfo p, PropertyMetadata prop, InstrumentedMethodInfo m)
+    private static bool ShouldTagProperty(string dotPath, string paramName, EquatableArray<string> skip, EquatableArray<string> fields,
+        EquatableArray<string> noInstrumentProperties = default)
     {
-        if (p.HasNoInstrument && p.NoInstrumentProperties.Length > 0)
+        if (noInstrumentProperties.Length > 0)
         {
-            if (p.NoInstrumentProperties.Any(np => string.Equals(np, prop.Name, System.StringComparison.OrdinalIgnoreCase)))
+            var relativePath = dotPath.StartsWith(paramName + ".")
+                ? dotPath.Substring(paramName.Length + 1) : dotPath;
+            if (noInstrumentProperties.Any(np => string.Equals(np, relativePath, System.StringComparison.OrdinalIgnoreCase)))
                 return false;
         }
 
-        var dotPath = $"{p.Name}.{prop.Name}";
-        if (m.Fields.Length > 0)
+        if (fields.Length > 0)
         {
-            var paramDotFields = m.Fields.Where(f => f.StartsWith(p.Name + ".")).ToList();
+            var paramDotFields = fields.Where(f => f.StartsWith(paramName + ".", System.StringComparison.OrdinalIgnoreCase)).ToList();
             if (paramDotFields.Count > 0)
-                return paramDotFields.Any(f => f == dotPath);
-            return m.Fields.Any(f => f == p.Name);
+                return paramDotFields.Any(f => string.Equals(f, dotPath, System.StringComparison.OrdinalIgnoreCase)
+                    || f.StartsWith(dotPath + ".", System.StringComparison.OrdinalIgnoreCase));
+            return fields.Any(f => string.Equals(f, paramName, System.StringComparison.OrdinalIgnoreCase));
         }
-        if (m.Skip.Length > 0)
+        if (skip.Length > 0)
         {
-            return !m.Skip.Any(s => s == dotPath);
+            return !skip.Any(s => string.Equals(s, dotPath, System.StringComparison.OrdinalIgnoreCase));
         }
         return true;
     }
 
-    private static bool ShouldTagTagMemberProperty(TagMemberInfo tm, PropertyMetadata prop)
+    private static void EmitPropertyTags(StringBuilder sb, string accessPrefix, string paramName,
+        EquatableArray<PropertyMetadata> properties, EquatableArray<string> skip, EquatableArray<string> fields,
+        EquatableArray<string> noInstrumentProperties, string methodName, int convention,
+        System.Collections.Generic.List<string>? pathSegments = null)
     {
-        if (tm.Fields.Length > 0)
-            return tm.Fields.Any(f => string.Equals(f, prop.Name, System.StringComparison.OrdinalIgnoreCase));
-        if (tm.Skip.Length > 0)
-            return !tm.Skip.Any(s => string.Equals(s, prop.Name, System.StringComparison.OrdinalIgnoreCase));
+        pathSegments ??= new System.Collections.Generic.List<string>();
+        foreach (var prop in properties)
+        {
+            pathSegments.Add(prop.Name);
+            var dotPath = $"{paramName}.{string.Join(".", pathSegments)}";
+            var access = $"{accessPrefix}?.{prop.Name}";
+
+            if (prop.IsComplex && prop.Properties.Length > 0)
+            {
+                if (ShouldTagProperty(dotPath, paramName, skip, fields, noInstrumentProperties))
+                {
+                    EmitPropertyTags(sb, access, paramName, prop.Properties, skip, fields,
+                        noInstrumentProperties, methodName, convention, pathSegments);
+                }
+            }
+            else
+            {
+                if (ShouldTagProperty(dotPath, paramName, skip, fields, noInstrumentProperties))
+                {
+                    var tagName = FormatTagName(methodName, paramName, pathSegments.ToArray(), convention);
+                    sb.AppendLine($"                __activity.SetTag(\"{Escape(tagName)}\", {access});");
+                }
+            }
+            pathSegments.RemoveAt(pathSegments.Count - 1);
+        }
+    }
+
+    private static void EmitTagMemberPropertyTags(StringBuilder sb, string accessPrefix, string namePrefix,
+        EquatableArray<PropertyMetadata> properties, EquatableArray<string> skip, EquatableArray<string> fields,
+        System.Collections.Generic.List<string>? pathSegments = null)
+    {
+        pathSegments ??= new System.Collections.Generic.List<string>();
+        foreach (var prop in properties)
+        {
+            pathSegments.Add(prop.Name);
+            var dotPath = string.Join(".", pathSegments);
+            var access = $"{accessPrefix}?.{prop.Name}";
+
+            if (prop.IsComplex && prop.Properties.Length > 0)
+            {
+                if (ShouldTagMemberProperty(dotPath, skip, fields))
+                {
+                    EmitTagMemberPropertyTags(sb, access, namePrefix, prop.Properties, skip, fields, pathSegments);
+                }
+            }
+            else
+            {
+                if (ShouldTagMemberProperty(dotPath, skip, fields))
+                {
+                    var tagName = $"{namePrefix}.{string.Join(".", pathSegments.Select(s => s.ToLowerInvariant()))}";
+                    sb.AppendLine($"                __activity.SetTag(\"{Escape(tagName)}\", {access});");
+                }
+            }
+            pathSegments.RemoveAt(pathSegments.Count - 1);
+        }
+    }
+
+    private static bool ShouldTagMemberProperty(string dotPath, EquatableArray<string> skip, EquatableArray<string> fields)
+    {
+        if (fields.Length > 0)
+            return fields.Any(f => string.Equals(f, dotPath, System.StringComparison.OrdinalIgnoreCase)
+                || f.StartsWith(dotPath + ".", System.StringComparison.OrdinalIgnoreCase));
+        if (skip.Length > 0)
+            return !skip.Any(s => string.Equals(s, dotPath, System.StringComparison.OrdinalIgnoreCase));
         return true;
     }
 
-    private static ParameterInfo ExtractParameterInfo(IParameterSymbol p, string? refKind)
+    private static PropertyMetadata[] ExtractProperties(ITypeSymbol type, int remainingDepth,
+        System.Collections.Generic.HashSet<string>? visited = null, string[]? forcedPaths = null)
+    {
+        bool hasForcedChildren = forcedPaths is { Length: > 0 };
+        if (remainingDepth <= 0 && !hasForcedChildren) return System.Array.Empty<PropertyMetadata>();
+
+        visited ??= new System.Collections.Generic.HashSet<string>();
+        var typeKey = type.ToDisplayString(SymbolDisplayFormat.FullyQualifiedFormat);
+        if (!visited.Add(typeKey)) return System.Array.Empty<PropertyMetadata>();
+
+        var result = type.GetMembers()
+            .OfType<IPropertySymbol>()
+            .Where(prop => prop.DeclaredAccessibility == Accessibility.Public
+                && !prop.IsStatic
+                && !prop.IsIndexer
+                && prop.GetMethod is not null)
+            .Select(prop =>
+            {
+                var propType = prop.Type;
+                var propTypeStr = propType.ToDisplayString(SymbolDisplayFormat.FullyQualifiedFormat);
+                bool propIsComplex = IsComplexType(propType);
+
+                var childForced = forcedPaths?
+                    .Where(fp => fp.StartsWith(prop.Name + ".", System.StringComparison.OrdinalIgnoreCase))
+                    .Select(fp => fp.Substring(prop.Name.Length + 1))
+                    .ToArray();
+                bool hasForced = childForced is { Length: > 0 };
+
+                var children = propIsComplex && (remainingDepth > 1 || hasForced)
+                    ? ExtractProperties(propType, System.Math.Max(remainingDepth - 1, 0), visited,
+                        hasForced ? childForced : null)
+                    : System.Array.Empty<PropertyMetadata>();
+                return new PropertyMetadata(
+                    prop.Name,
+                    propTypeStr,
+                    propIsComplex && children.Length > 0,
+                    new EquatableArray<PropertyMetadata>(children));
+            })
+            .ToArray();
+
+        visited.Remove(typeKey);
+        return result;
+    }
+
+    private static ParameterInfo ExtractParameterInfo(IParameterSymbol p, string? refKind,
+        int depth = DefaultDepth, string[]? skip = null, string[]? fields = null)
     {
         var type = p.Type;
         var typeStr = type.ToDisplayString(SymbolDisplayFormat.FullyQualifiedFormat);
         bool isComplex = IsComplexType(type);
-        var properties = System.Array.Empty<PropertyMetadata>();
 
+        string[]? forcedPaths = null;
         if (isComplex)
         {
-            properties = type.GetMembers()
-                .OfType<IPropertySymbol>()
-                .Where(prop => prop.DeclaredAccessibility == Accessibility.Public
-                    && !prop.IsStatic
-                    && !prop.IsIndexer
-                    && prop.GetMethod is not null)
-                .Select(prop => new PropertyMetadata(
-                    prop.Name,
-                    prop.Type.ToDisplayString(SymbolDisplayFormat.FullyQualifiedFormat)))
+            var allPaths = (skip ?? System.Array.Empty<string>())
+                .Concat(fields ?? System.Array.Empty<string>())
+                .Where(f => f.StartsWith(p.Name + ".", System.StringComparison.OrdinalIgnoreCase))
+                .Select(f => f.Substring(p.Name.Length + 1))
                 .ToArray();
+            if (allPaths.Length > 0) forcedPaths = allPaths;
         }
+
+        var properties = isComplex
+            ? ExtractProperties(type, depth, forcedPaths: forcedPaths)
+            : System.Array.Empty<PropertyMetadata>();
 
         bool hasNoInstrument = false;
         var noInstrumentProperties = System.Array.Empty<string>();
@@ -814,6 +959,7 @@ public sealed class InstrumentGenerator : IIncrementalGenerator
             string? tagName = null;
             string[]? skip = null;
             string[]? fields = null;
+            int depth = -1;
             foreach (var arg in tagAttr.NamedArguments)
             {
                 switch (arg.Key)
@@ -826,6 +972,9 @@ public sealed class InstrumentGenerator : IIncrementalGenerator
                         break;
                     case "Fields":
                         fields = arg.Value.Values.Select(v => v.Value as string).Where(v => v != null).ToArray()!;
+                        break;
+                    case "Depth":
+                        depth = (int)(arg.Value.Value ?? -1);
                         break;
                 }
             }
@@ -840,44 +989,46 @@ public sealed class InstrumentGenerator : IIncrementalGenerator
 
             var memberType = typeSymbol.ToDisplayString(SymbolDisplayFormat.FullyQualifiedFormat);
             bool isComplex = IsComplexType(typeSymbol);
-            var properties = System.Array.Empty<PropertyMetadata>();
+            var effectiveDepth = depth >= 0 ? depth : DefaultDepth;
 
+            string[]? forcedPaths = null;
             if (isComplex)
             {
-                properties = typeSymbol.GetMembers()
-                    .OfType<IPropertySymbol>()
-                    .Where(p => p.DeclaredAccessibility == Accessibility.Public
-                        && !p.IsStatic
-                        && !p.IsIndexer
-                        && p.GetMethod is not null)
-                    .Select(p => new PropertyMetadata(
-                        p.Name,
-                        p.Type.ToDisplayString(SymbolDisplayFormat.FullyQualifiedFormat)))
+                var allPaths = (skip ?? System.Array.Empty<string>())
+                    .Concat(fields ?? System.Array.Empty<string>())
                     .ToArray();
+                if (allPaths.Length > 0) forcedPaths = allPaths;
             }
+
+            var properties = isComplex
+                ? ExtractProperties(typeSymbol, effectiveDepth, forcedPaths: forcedPaths)
+                : System.Array.Empty<PropertyMetadata>();
 
             tagMembers.Add(new TagMemberInfo(
                 member.Name,
                 tagName,
                 memberType,
-                isComplex,
+                isComplex && properties.Length > 0,
                 new EquatableArray<PropertyMetadata>(properties),
                 new EquatableArray<string>(skip ?? System.Array.Empty<string>()),
-                new EquatableArray<string>(fields ?? System.Array.Empty<string>())));
+                new EquatableArray<string>(fields ?? System.Array.Empty<string>()),
+                depth));
         }
         return tagMembers.ToArray();
     }
 
-    private static string FormatTagName(string methodName, string paramName, string? propName, int convention)
+    private static string FormatTagName(string methodName, string paramName, string[]? propPath, int convention)
     {
         var method = methodName.ToLowerInvariant();
         var param = paramName.ToLowerInvariant();
-        var prop = propName?.ToLowerInvariant();
+        var suffix = propPath is { Length: > 0 }
+            ? "." + string.Join(".", propPath.Select(s => s.ToLowerInvariant()))
+            : "";
 
         return convention switch
         {
-            1 => prop is not null ? $"{param}.{prop}" : param,
-            _ => prop is not null ? $"{method}.{param}.{prop}" : $"{method}.{param}",
+            1 => $"{param}{suffix}",
+            _ => $"{method}.{param}{suffix}",
         };
     }
 
@@ -891,7 +1042,22 @@ public sealed class InstrumentGenerator : IIncrementalGenerator
                 or "System.Threading.CancellationToken"
                 or "System.Diagnostics.ActivityContext") return false;
         if (type.TypeKind == TypeKind.Enum) return false;
+        if (type.TypeKind == TypeKind.Array) return false;
+        if (IsCollectionType(type)) return false;
         return true;
+    }
+
+    private static bool IsCollectionType(ITypeSymbol type)
+    {
+        if (type is not INamedTypeSymbol named) return false;
+        foreach (var iface in named.AllInterfaces)
+        {
+            if (iface.OriginalDefinition.ToDisplayString() == "System.Collections.Generic.IEnumerable<T>")
+                return true;
+        }
+        if (named.OriginalDefinition.ToDisplayString() == "System.Collections.Generic.IEnumerable<T>")
+            return true;
+        return false;
     }
 
     private static string KindToString(int kind) => kind switch
