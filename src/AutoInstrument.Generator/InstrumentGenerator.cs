@@ -851,7 +851,9 @@ public sealed class InstrumentGenerator : IIncrementalGenerator
         var name = type.ToDisplayString();
         if (name is "decimal" or "System.Decimal"
                 or "System.DateTime" or "System.DateTimeOffset"
-                or "System.TimeSpan" or "System.Guid") return false;
+                or "System.TimeSpan" or "System.Guid"
+                or "System.Threading.CancellationToken"
+                or "System.Diagnostics.ActivityContext") return false;
         if (type.TypeKind == TypeKind.Enum) return false;
         return true;
     }
