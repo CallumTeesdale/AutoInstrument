@@ -5,18 +5,12 @@ namespace AutoInstrument;
 /// </summary>
 public enum TagNamingConvention
 {
-    /// <summary>
-    /// Default: <c>methodname.param</c> / <c>methodname.param.prop</c>
-    /// </summary>
+    /// <summary>methodname.param</summary>
     Method = 0,
 
-    /// <summary>
-    /// Flat: <c>param</c> / <c>param.prop</c> (no method prefix)
-    /// </summary>
+    /// <summary>param (no method prefix)</summary>
     Flat = 1,
 
-    /// <summary>
-    /// Alias for <see cref="Method"/> for OpenTelemetry clarity.
-    /// </summary>
+    /// <summary>Alias for <see cref="Method"/>.</summary>
     OTel = 2,
 }

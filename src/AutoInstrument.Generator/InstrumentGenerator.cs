@@ -9,10 +9,7 @@ using Microsoft.CodeAnalysis.Text;
 
 namespace AutoInstrument.Generator;
 
-/// <summary>
-/// Emits a centralised ActivitySource holder and interceptor wrappers
-/// for every call-site of an [Instrument]-decorated method.
-/// </summary>
+/// <summary>Incremental generator that emits interceptors for [Instrument]-decorated methods.</summary>
 [Generator]
 public sealed class InstrumentGenerator : IIncrementalGenerator
 {
@@ -26,7 +23,6 @@ public sealed class InstrumentGenerator : IIncrementalGenerator
 
     public void Initialize(IncrementalGeneratorInitializationContext context)
     {
-        // 1. Collect instrumented methods
         var instrumentedMethods = context.SyntaxProvider
             .ForAttributeWithMetadataName(
                 AttributeFqn,
@@ -36,7 +32,6 @@ public sealed class InstrumentGenerator : IIncrementalGenerator
 
         var collectedMethods = instrumentedMethods.Collect();
 
-        // 2. Collect call-sites
         var callSites = context.SyntaxProvider
             .CreateSyntaxProvider(
                 predicate: static (node, _) => node is InvocationExpressionSyntax,
@@ -45,7 +40,6 @@ public sealed class InstrumentGenerator : IIncrementalGenerator
 
         var collectedCallSites = callSites.Collect();
 
-        // 3. MSBuild property: <AutoInstrumentSourceName>
         var msBuildDefault = context.AnalyzerConfigOptionsProvider
             .Select(static (provider, _) =>
             {
@@ -53,7 +47,6 @@ public sealed class InstrumentGenerator : IIncrementalGenerator
                 return string.IsNullOrWhiteSpace(value) ? null : value;
             });
 
-        // 4. Assembly-level [AutoInstrumentSource("X")]
         var assemblyDefault = context.SyntaxProvider
             .ForAttributeWithMetadataName(
                 SourceAttributeFqn,
@@ -70,11 +63,9 @@ public sealed class InstrumentGenerator : IIncrementalGenerator
             .Collect()
             .Select(static (arr, _) => arr.IsDefaultOrEmpty ? null : arr[0]);
 
-        // 5. Combine default name: MSBuild wins over assembly attribute
         var defaultName = msBuildDefault.Combine(assemblyDefault)
             .Select(static (pair, _) => pair.Left ?? pair.Right);
 
-        // 6. Tag naming convention from assembly attribute
         var assemblyTagNaming = context.SyntaxProvider
             .ForAttributeWithMetadataName(
                 ConfigAttributeFqn,
@@ -95,7 +86,6 @@ public sealed class InstrumentGenerator : IIncrementalGenerator
             .Collect()
             .Select(static (arr, _) => arr.IsDefaultOrEmpty ? (int?)null : arr[0]);
 
-        // 7. MSBuild property: <AutoInstrumentTagNaming>
         var msBuildTagNaming = context.AnalyzerConfigOptionsProvider
             .Select(static (provider, _) =>
             {
@@ -113,7 +103,6 @@ public sealed class InstrumentGenerator : IIncrementalGenerator
         var tagNaming = msBuildTagNaming.Combine(assemblyTagNaming)
             .Select(static (pair, _) => pair.Left ?? pair.Right ?? 0);
 
-        // 8. Combine everything and emit
         var combined = collectedMethods
             .Combine(collectedCallSites)
             .Combine(defaultName)
@@ -343,11 +332,9 @@ public sealed class InstrumentGenerator : IIncrementalGenerator
         return new InterceptCallSite
         {
             Method = methodInfo,
-#pragma warning disable RSEXPERIMENTAL002
             LocationVersion = location.Version,
             LocationData = location.Data,
             DisplayLocation = location.GetDisplayLocation(),
-#pragma warning restore RSEXPERIMENTAL002
             ReceiverType = receiverType,
             IsStaticCall = isStaticCall,
         };
@@ -360,7 +347,6 @@ public sealed class InstrumentGenerator : IIncrementalGenerator
         string? defaultActivitySourceName = null,
         int tagNamingConvention = 0)
     {
-        // Apply the resolved default name and tag naming to all methods/sites
         if (defaultActivitySourceName is not null || tagNamingConvention != 0)
         {
             methods = methods.Select(m =>
@@ -505,7 +491,6 @@ public sealed class InstrumentGenerator : IIncrementalGenerator
                 var callExpr = isInstance ? $"__self.{method.MethodName}({argStr})" : $"{method.FullyQualifiedClassName}.{method.MethodName}({argStr})";
                 var awaitExpr = method.IsAwaitable ? "await " : "";
 
-                // Condition guard — if false, call original directly
                 if (method.Condition is not null)
                 {
                     var condAccess = isInstance ? $"__self.{method.Condition}" : $"{method.FullyQualifiedClassName}.{method.Condition}";
@@ -538,7 +523,6 @@ public sealed class InstrumentGenerator : IIncrementalGenerator
                 }
                 sb.AppendLine();
 
-                // LinkTo support
                 if (method.LinkTo is not null)
                 {
                     sb.AppendLine($"            var __links = new[] {{ new global::System.Diagnostics.ActivityLink({method.LinkTo}) }};");
@@ -552,12 +536,10 @@ public sealed class InstrumentGenerator : IIncrementalGenerator
                 }
                 sb.AppendLine();
 
-                // Tag parameters
                 var taggable = method.Parameters
                     .Where(p => ShouldTagParameter(p, method) && p.RefKind != "out")
                     .ToList();
 
-                // Tag members from [Tag] attribute
                 var tagMembers = method.TagMembers.Where(_ => isInstance).ToList();
 
                 if (taggable.Count > 0 || tagMembers.Count > 0)
@@ -715,12 +697,10 @@ public sealed class InstrumentGenerator : IIncrementalGenerator
 
         if (m.Fields.Length > 0)
         {
-            // Include if Fields mentions this param directly or via dot-notation
             return m.Fields.Any(f => f == p.Name || f.StartsWith(p.Name + "."));
         }
         if (m.Skip.Length > 0)
         {
-            // Exclude if Skip mentions this param directly (without dot — dot means skip specific property)
             return !m.Skip.Any(s => s == p.Name);
         }
         return true;
@@ -737,11 +717,9 @@ public sealed class InstrumentGenerator : IIncrementalGenerator
         var dotPath = $"{p.Name}.{prop.Name}";
         if (m.Fields.Length > 0)
         {
-            // If Fields has dot-notation entries for this param, only include those specific properties
             var paramDotFields = m.Fields.Where(f => f.StartsWith(p.Name + ".")).ToList();
             if (paramDotFields.Count > 0)
                 return paramDotFields.Any(f => f == dotPath);
-            // Fields mentions param without dot → include all properties
             return m.Fields.Any(f => f == p.Name);
         }
         if (m.Skip.Length > 0)
@@ -772,7 +750,6 @@ public sealed class InstrumentGenerator : IIncrementalGenerator
                 .ToArray();
         }
 
-        // Check for [NoInstrument] attribute on the parameter
         bool hasNoInstrument = false;
         var noInstrumentProperties = System.Array.Empty<string>();
         var noInstrAttr = p.GetAttributes().FirstOrDefault(a =>
@@ -840,8 +817,8 @@ public sealed class InstrumentGenerator : IIncrementalGenerator
 
         return convention switch
         {
-            1 => prop is not null ? $"{param}.{prop}" : param, // Flat
-            _ => prop is not null ? $"{method}.{param}.{prop}" : $"{method}.{param}", // Method / OTel
+            1 => prop is not null ? $"{param}.{prop}" : param,
+            _ => prop is not null ? $"{method}.{param}.{prop}" : $"{method}.{param}",
         };
     }
 

@@ -37,8 +37,6 @@ public static class Extensions
             {
                 tracing.AddAspNetCoreInstrumentation()
                     .AddHttpClientInstrumentation()
-                    // Pick up AutoInstrument's ActivitySource as this is what we said in the 
-                    // [assembly: AutoInstrumentSource("AspireSample.Api")] attribute
                     .AddSource("AspireSample.Api");
             });
 

@@ -50,7 +50,6 @@ public class YakShavingService
     [Instrument(Condition = nameof(IsDetailedTracingEnabled))]
     public void DetailedInspection(int yakId)
     {
-        // Only instrumented when IsDetailedTracingEnabled is true
         Thread.Sleep(10);
     }
 
