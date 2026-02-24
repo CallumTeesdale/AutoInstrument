@@ -1,5 +1,6 @@
 <Project>
   <ItemGroup>
     <CompilerVisibleProperty Include="AutoInstrumentSourceName" />
+    <CompilerVisibleProperty Include="AutoInstrumentTagNaming" />
   </ItemGroup>
 </Project>

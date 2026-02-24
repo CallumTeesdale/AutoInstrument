@@ -14,7 +14,8 @@ internal static class GeneratorTestHelper
     /// </summary>
     internal static ImmutableArray<(string HintName, string Source)> RunGenerator(
         string source,
-        string? autoInstrumentSourceName = null)
+        string? autoInstrumentSourceName = null,
+        string? tagNaming = null)
     {
         var syntaxTree = CSharpSyntaxTree.ParseText(source);
 
@@ -28,8 +29,8 @@ internal static class GeneratorTestHelper
 
         var generator = new InstrumentGenerator();
 
-        var optionsProvider = autoInstrumentSourceName is not null
-            ? new TestAnalyzerConfigOptionsProvider(autoInstrumentSourceName)
+        var optionsProvider = (autoInstrumentSourceName is not null || tagNaming is not null)
+            ? new TestAnalyzerConfigOptionsProvider(autoInstrumentSourceName, tagNaming)
             : null;
 
         GeneratorDriver driver = CSharpGeneratorDriver.Create(
@@ -89,9 +90,9 @@ internal static class GeneratorTestHelper
     {
         private readonly TestGlobalOptions _globalOptions;
 
-        public TestAnalyzerConfigOptionsProvider(string autoInstrumentSourceName)
+        public TestAnalyzerConfigOptionsProvider(string? autoInstrumentSourceName, string? tagNaming = null)
         {
-            _globalOptions = new TestGlobalOptions(autoInstrumentSourceName);
+            _globalOptions = new TestGlobalOptions(autoInstrumentSourceName, tagNaming);
         }
 
         public override AnalyzerConfigOptions GlobalOptions => _globalOptions;
@@ -101,18 +102,25 @@ internal static class GeneratorTestHelper
 
         private sealed class TestGlobalOptions : AnalyzerConfigOptions
         {
-            private readonly string _autoInstrumentSourceName;
+            private readonly string? _autoInstrumentSourceName;
+            private readonly string? _tagNaming;
 
-            public TestGlobalOptions(string autoInstrumentSourceName)
+            public TestGlobalOptions(string? autoInstrumentSourceName, string? tagNaming)
             {
                 _autoInstrumentSourceName = autoInstrumentSourceName;
+                _tagNaming = tagNaming;
             }
 
             public override bool TryGetValue(string key, [System.Diagnostics.CodeAnalysis.NotNullWhen(true)] out string? value)
             {
-                if (key == "build_property.AutoInstrumentSourceName")
+                if (key == "build_property.AutoInstrumentSourceName" && _autoInstrumentSourceName is not null)
                 {
                     value = _autoInstrumentSourceName;
+                    return true;
+                }
+                if (key == "build_property.AutoInstrumentTagNaming" && _tagNaming is not null)
+                {
+                    value = _tagNaming;
                     return true;
                 }
                 value = null;

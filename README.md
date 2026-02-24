@@ -190,6 +190,57 @@ The `ActivityKind` for the span. Default: `0` (Internal).
 public async Task<string> CallExternalApi(string endpoint) { ... }
 ```
 
+### `RecordSuccess`
+
+Set the activity status to `Ok` when the method completes without exceptions. Default: `false`.
+
+```csharp
+[Instrument(RecordSuccess = true)]
+public void ProcessOrder(int orderId) { ... }
+// On success: activity status = Ok
+// On failure: activity status = Error (if RecordException is true)
+```
+
+### `IgnoreCancellation`
+
+Don't record `OperationCanceledException` as errors on the span. Default: `true`.
+
+```csharp
+// Default: cancellations are silently ignored
+[Instrument]
+public async Task DoWork(CancellationToken ct) { ... }
+// OperationCanceledException → no error status, just rethrown
+
+// Opt in to recording cancellations as errors
+[Instrument(IgnoreCancellation = false)]
+public async Task DoWork(CancellationToken ct) { ... }
+// OperationCanceledException → error status + exception event
+```
+
+### `Condition`
+
+Only create a span when a boolean property/field evaluates to `true` at runtime. When `false`, the original method is called directly with zero overhead.
+
+```csharp
+public class OrderService
+{
+    public bool IsDetailedTracingEnabled { get; set; }
+
+    [Instrument(Condition = nameof(IsDetailedTracingEnabled))]
+    public void Process(int id) { ... }
+}
+```
+
+### `LinkTo`
+
+Pass correlation context via `ActivityLink` to a related activity context.
+
+```csharp
+[Instrument(LinkTo = "parentContext")]
+public void Process(int id, ActivityContext parentContext) { ... }
+// The span will have an ActivityLink to parentContext
+```
+
 ### Summary
 
 | Property | Default | Description |
@@ -201,6 +252,44 @@ public async Task<string> CallExternalApi(string endpoint) { ... }
 | `RecordReturnValue` | `false` | Tag the return value |
 | `RecordException` | `true` | Record exceptions on span |
 | `Kind` | `0` (Internal) | ActivityKind (0-4) |
+| `RecordSuccess` | `false` | Set status Ok on success |
+| `IgnoreCancellation` | `true` | Ignore OperationCanceledException |
+| `Condition` | `null` | Boolean member for conditional instrumentation |
+| `LinkTo` | `null` | Parameter name for ActivityLink |
+
+## Parameter attributes
+
+### `[NoInstrument]`
+
+Skip tagging specific parameters without using `Skip`. Supports dot-notation for complex types.
+
+```csharp
+// Skip entire parameter
+public void Login(string user, [NoInstrument] string password) { ... }
+// Tags: login.user ✓  login.password ✗
+
+// Skip specific properties of a complex parameter
+public void Process([NoInstrument("CreditCard", "SSN")] Order order) { ... }
+// Tags: process.order.id ✓  process.order.creditcard ✗  process.order.ssn ✗
+```
+
+## Member tags
+
+### `[Tag]`
+
+Add extra contextual tags from instance fields/properties (not method parameters).
+
+```csharp
+public class OrderService
+{
+    [Tag] public string Region { get; set; }
+    [Tag(Name = "env")] public string Environment { get; set; }
+
+    [Instrument]
+    public void Process(int orderId) { ... }
+    // Tags: process.orderid, region, env
+}
+```
 
 ## Complex types
 
@@ -262,15 +351,44 @@ using AutoInstrument;
 
 Both set the default for all `[Instrument]` methods in the project. The per-method `ActivitySourceName` always wins.
 
+### Tag naming convention
+
+Control how parameter tag names are formatted. Default: `Method` (`methodname.param`).
+
+| Convention | Format | Example |
+|---|---|---|
+| `Method` (default) | `methodname.param` | `process.orderid` |
+| `Flat` | `param` | `orderid` |
+| `OTel` | Same as Method | `process.orderid` |
+
+#### Assembly attribute
+
+```csharp
+[assembly: AutoInstrumentConfig(TagNaming = TagNamingConvention.Flat)]
+```
+
+#### MSBuild property
+
+```xml
+<PropertyGroup>
+  <AutoInstrumentTagNaming>Flat</AutoInstrumentTagNaming>
+</PropertyGroup>
+```
+
+MSBuild property takes priority over the assembly attribute.
+
 ## Diagnostics
 
-The analyzer validates `Skip` and `Fields` at compile time:
+The analyzer validates attributes at compile time:
 
 | ID | Message |
 |---|---|
 | `AUTOINST001` | `'{name}' in Skip is not a parameter of '{method}'` |
 | `AUTOINST002` | `'{name}' in Fields is not a parameter of '{method}'` |
 | `AUTOINST003` | `'{property}' is not a public property of parameter '{param}' (type '{type}') in '{method}'` |
+| `AUTOINST004` | `'{name}' is not a boolean property or field on '{type}'` |
+| `AUTOINST005` | `'{name}' is not a parameter of type ActivityContext on '{method}'` |
+| `AUTOINST006` | `'{property}' is not a public property of parameter '{param}' (type '{type}') in '{method}'` |
 
 ```csharp
 [Instrument(Skip = new[] { "pwd" })]           // AUTOINST001 — no parameter named 'pwd'
@@ -278,6 +396,14 @@ public void Login(string username, string password) { }
 
 [Instrument(Skip = new[] { "order.Foo" })]      // AUTOINST003 — 'Foo' is not a property of Order
 public void Process(Order order) { }
+
+[Instrument(Condition = "NotExist")]             // AUTOINST004 — not a bool member
+public void Process(int id) { }
+
+[Instrument(LinkTo = "id")]                      // AUTOINST005 — 'id' is not ActivityContext
+public void Process(int id) { }
+
+public void Process([NoInstrument("Foo")] Order order) { }  // AUTOINST006 — 'Foo' not on Order
 ```
 
 ## Rust comparison
@@ -286,9 +412,11 @@ public void Process(Order order) { }
 |---|---|---|
 | Auto-capture params | yes | yes |
 | Complex type expansion | no (uses Debug) | yes (public properties) |
-| Skip params | `skip(pwd)` | `Skip = ["pwd"]` |
+| Skip params | `skip(pwd)` | `Skip = ["pwd"]` or `[NoInstrument]` |
 | Custom span name | `name = "x"` | `Name = "x"` |
 | Record return | `ret` | `RecordReturnValue = true` |
+| Conditional | — | `Condition = "prop"` |
+| Activity links | — | `LinkTo = "ctx"` |
 | Zero runtime cost | proc macro | source gen + interceptor |
 | Modifies user code | no | no |
 

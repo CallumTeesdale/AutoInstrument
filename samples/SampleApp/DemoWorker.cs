@@ -48,11 +48,24 @@ public class DemoWorker : BackgroundService
         Console.WriteLine("=== Hash via separate service ===");
         var hash = _hashService.ComputeYakHash("yak-42-data");
         Console.WriteLine($"Hash: {hash}");
-        
+
         Console.WriteLine("=== Shave Yak Name ===");
         var yakInfo = new YakShavingService.YakInfo(1, "woolworth");
         await svc.ShaveNamedYak(yakInfo);
         Console.WriteLine($"Shaved {yakInfo.name}");
+
+        Console.WriteLine("=== Premium shave (RecordSuccess) ===");
+        var premiumResult = await svc.PremiumShave(42, "platinum");
+        Console.WriteLine($"Result: {premiumResult}");
+
+        Console.WriteLine("=== Conditional instrumentation ===");
+        svc.DetailedInspection(42);
+        Console.WriteLine("Inspected.");
+
+        Console.WriteLine("=== NoInstrument parameter ===");
+        await svc.SecureProcess("admin", "top-secret");
+        Console.WriteLine("Done.");
+
         Console.WriteLine("=== Done ===");
 
         _lifetime.StopApplication();

@@ -18,7 +18,11 @@ public sealed class InstrumentGenerator : IIncrementalGenerator
 {
     private const string AttributeFqn = "AutoInstrument.InstrumentAttribute";
     private const string SourceAttributeFqn = "AutoInstrument.AutoInstrumentSourceAttribute";
+    private const string ConfigAttributeFqn = "AutoInstrument.AutoInstrumentConfigAttribute";
+    private const string NoInstrumentAttributeFqn = "AutoInstrument.NoInstrumentAttribute";
+    private const string TagAttributeFqn = "AutoInstrument.TagAttribute";
     private const string MsBuildPropertyName = "build_property.AutoInstrumentSourceName";
+    private const string MsBuildTagNamingPropertyName = "build_property.AutoInstrumentTagNaming";
 
     public void Initialize(IncrementalGeneratorInitializationContext context)
     {
@@ -70,17 +74,92 @@ public sealed class InstrumentGenerator : IIncrementalGenerator
         var defaultName = msBuildDefault.Combine(assemblyDefault)
             .Select(static (pair, _) => pair.Left ?? pair.Right);
 
-        // 6. Combine everything and emit
+        // 6. Tag naming convention from assembly attribute
+        var assemblyTagNaming = context.SyntaxProvider
+            .ForAttributeWithMetadataName(
+                ConfigAttributeFqn,
+                predicate: static (node, _) => node is CompilationUnitSyntax,
+                transform: static (ctx, _) =>
+                {
+                    var attr = ctx.Attributes.FirstOrDefault(a =>
+                        a.AttributeClass?.ToDisplayString() == ConfigAttributeFqn);
+                    if (attr is null) return (int?)null;
+                    foreach (var arg in attr.NamedArguments)
+                    {
+                        if (arg.Key == "TagNaming" && arg.Value.Value is int val)
+                            return val;
+                    }
+                    return null;
+                })
+            .Where(static x => x is not null)
+            .Collect()
+            .Select(static (arr, _) => arr.IsDefaultOrEmpty ? (int?)null : arr[0]);
+
+        // 7. MSBuild property: <AutoInstrumentTagNaming>
+        var msBuildTagNaming = context.AnalyzerConfigOptionsProvider
+            .Select(static (provider, _) =>
+            {
+                provider.GlobalOptions.TryGetValue(MsBuildTagNamingPropertyName, out var value);
+                if (string.IsNullOrWhiteSpace(value)) return (int?)null;
+                return value!.Trim().ToLowerInvariant() switch
+                {
+                    "flat" or "1" => 1,
+                    "otel" or "2" => 2,
+                    "method" or "0" => 0,
+                    _ => (int?)null,
+                };
+            });
+
+        var tagNaming = msBuildTagNaming.Combine(assemblyTagNaming)
+            .Select(static (pair, _) => pair.Left ?? pair.Right ?? 0);
+
+        // 8. Combine everything and emit
         var combined = collectedMethods
             .Combine(collectedCallSites)
-            .Combine(defaultName);
+            .Combine(defaultName)
+            .Combine(tagNaming);
 
         context.RegisterSourceOutput(combined, static (spc, pair) =>
         {
-            var ((methods, sites), resolvedDefault) = pair;
+            var (((methods, sites), resolvedDefault), resolvedTagNaming) = pair;
             if (methods.IsDefaultOrEmpty && sites.IsDefaultOrEmpty) return;
-            EmitCombinedFile(spc, methods, sites, resolvedDefault);
+            EmitCombinedFile(spc, methods, sites, resolvedDefault, resolvedTagNaming);
         });
+    }
+
+    private static (string? spanName, string? activitySourceName, string[] skip, string[] fields,
+        bool recordReturnValue, bool recordException, int kind, bool recordSuccess,
+        bool ignoreCancellation, string? condition, string? linkTo) ParseInstrumentAttribute(AttributeData attr)
+    {
+        string? spanName = null, activitySourceName = null, condition = null, linkTo = null;
+        string[] skip = System.Array.Empty<string>(), fields = System.Array.Empty<string>();
+        bool recordReturnValue = false, recordException = true, recordSuccess = false, ignoreCancellation = true;
+        int kind = 0;
+
+        foreach (var arg in attr.NamedArguments)
+        {
+            switch (arg.Key)
+            {
+                case "Name": spanName = arg.Value.Value as string; break;
+                case "ActivitySourceName": activitySourceName = arg.Value.Value as string; break;
+                case "RecordReturnValue": recordReturnValue = arg.Value.Value is true; break;
+                case "RecordException": recordException = arg.Value.Value is not false; break;
+                case "Kind": kind = (int)(arg.Value.Value ?? 0); break;
+                case "RecordSuccess": recordSuccess = arg.Value.Value is true; break;
+                case "IgnoreCancellation": ignoreCancellation = arg.Value.Value is not false; break;
+                case "Condition": condition = arg.Value.Value as string; break;
+                case "LinkTo": linkTo = arg.Value.Value as string; break;
+                case "Skip":
+                    skip = arg.Value.Values.Select(v => v.Value as string).Where(v => v != null).ToArray()!;
+                    break;
+                case "Fields":
+                    fields = arg.Value.Values.Select(v => v.Value as string).Where(v => v != null).ToArray()!;
+                    break;
+            }
+        }
+
+        return (spanName, activitySourceName, skip, fields, recordReturnValue, recordException, kind,
+            recordSuccess, ignoreCancellation, condition, linkTo);
     }
 
     private static InstrumentedMethodInfo? ExtractMethodInfo(
@@ -94,28 +173,7 @@ public sealed class InstrumentGenerator : IIncrementalGenerator
             a.AttributeClass?.ToDisplayString() == AttributeFqn);
         if (attr is null) return null;
 
-        string? spanName = null, activitySourceName = null;
-        string[] skip = System.Array.Empty<string>(), fields = System.Array.Empty<string>();
-        bool recordReturnValue = false, recordException = true;
-        int kind = 0;
-
-        foreach (var arg in attr.NamedArguments)
-        {
-            switch (arg.Key)
-            {
-                case "Name": spanName = arg.Value.Value as string; break;
-                case "ActivitySourceName": activitySourceName = arg.Value.Value as string; break;
-                case "RecordReturnValue": recordReturnValue = arg.Value.Value is true; break;
-                case "RecordException": recordException = arg.Value.Value is not false; break;
-                case "Kind": kind = (int)(arg.Value.Value ?? 0); break;
-                case "Skip":
-                    skip = arg.Value.Values.Select(v => v.Value as string).Where(v => v != null).ToArray()!;
-                    break;
-                case "Fields":
-                    fields = arg.Value.Values.Select(v => v.Value as string).Where(v => v != null).ToArray()!;
-                    break;
-            }
-        }
+        var parsed = ParseInstrumentAttribute(attr);
 
         var returnType = method.ReturnType;
         var returnTypeStr = returnType.ToDisplayString(SymbolDisplayFormat.FullyQualifiedFormat);
@@ -151,6 +209,8 @@ public sealed class InstrumentGenerator : IIncrementalGenerator
                 _ => null
             })).ToArray();
 
+        var tagMembers = ExtractTagMembers(containingType);
+
         return new InstrumentedMethodInfo
         {
             Namespace = containingType.ContainingNamespace?.IsGlobalNamespace == true
@@ -158,9 +218,9 @@ public sealed class InstrumentGenerator : IIncrementalGenerator
             ClassName = containingType.Name,
             MethodName = method.Name,
             FullyQualifiedClassName = containingType.ToDisplayString(SymbolDisplayFormat.FullyQualifiedFormat),
-            SpanName = spanName,
+            SpanName = parsed.spanName,
             AssemblyName = containingType.ContainingAssembly?.Name ?? "Unknown",
-            ActivitySourceName = activitySourceName,
+            ActivitySourceName = parsed.activitySourceName,
             ReturnType = returnTypeStr,
             IsAsync = isAsync,
             ReturnsVoid = returnsVoid,
@@ -170,11 +230,17 @@ public sealed class InstrumentGenerator : IIncrementalGenerator
             IsStatic = method.IsStatic,
             IsExtensionMethod = method.IsExtensionMethod,
             Parameters = new EquatableArray<ParameterInfo>(parameters),
-            Skip = new EquatableArray<string>(skip),
-            Fields = new EquatableArray<string>(fields),
-            RecordReturnValue = recordReturnValue,
-            RecordException = recordException,
-            Kind = kind,
+            Skip = new EquatableArray<string>(parsed.skip),
+            Fields = new EquatableArray<string>(parsed.fields),
+            RecordReturnValue = parsed.recordReturnValue,
+            RecordException = parsed.recordException,
+            Kind = parsed.kind,
+            RecordSuccess = parsed.recordSuccess,
+            IgnoreCancellation = parsed.ignoreCancellation,
+            Condition = parsed.condition,
+
+            LinkTo = parsed.linkTo,
+            TagMembers = new EquatableArray<TagMemberInfo>(tagMembers),
         };
     }
 
@@ -199,28 +265,7 @@ public sealed class InstrumentGenerator : IIncrementalGenerator
         var attr = targetMethod.GetAttributes().First(a =>
             a.AttributeClass?.ToDisplayString() == AttributeFqn);
 
-        string? spanName = null, activitySourceName = null;
-        string[] skip = System.Array.Empty<string>(), fields = System.Array.Empty<string>();
-        bool recordReturnValue = false, recordException = true;
-        int kind = 0;
-
-        foreach (var arg in attr.NamedArguments)
-        {
-            switch (arg.Key)
-            {
-                case "Name": spanName = arg.Value.Value as string; break;
-                case "ActivitySourceName": activitySourceName = arg.Value.Value as string; break;
-                case "RecordReturnValue": recordReturnValue = arg.Value.Value is true; break;
-                case "RecordException": recordException = arg.Value.Value is not false; break;
-                case "Kind": kind = (int)(arg.Value.Value ?? 0); break;
-                case "Skip":
-                    skip = arg.Value.Values.Select(v => v.Value as string).Where(v => v != null).ToArray()!;
-                    break;
-                case "Fields":
-                    fields = arg.Value.Values.Select(v => v.Value as string).Where(v => v != null).ToArray()!;
-                    break;
-            }
-        }
+        var parsed = ParseInstrumentAttribute(attr);
 
         var containingType = targetMethod.ContainingType;
         var returnType = calledMethod.ReturnType;
@@ -256,6 +301,8 @@ public sealed class InstrumentGenerator : IIncrementalGenerator
                 _ => null
             })).ToArray();
 
+        var tagMembers = containingType is not null ? ExtractTagMembers(containingType) : System.Array.Empty<TagMemberInfo>();
+
         string receiverType = "";
         bool isStaticCall = calledMethod.IsStatic;
         if (!isStaticCall && containingType != null)
@@ -270,9 +317,9 @@ public sealed class InstrumentGenerator : IIncrementalGenerator
             ClassName = containingType?.Name ?? "",
             MethodName = targetMethod.Name,
             FullyQualifiedClassName = containingType?.ToDisplayString(SymbolDisplayFormat.FullyQualifiedFormat) ?? "",
-            SpanName = spanName,
+            SpanName = parsed.spanName,
             AssemblyName = containingType?.ContainingAssembly?.Name ?? "Unknown",
-            ActivitySourceName = activitySourceName,
+            ActivitySourceName = parsed.activitySourceName,
             ReturnType = returnTypeStr,
             IsAsync = isAsync,
             ReturnsVoid = returnsVoid,
@@ -282,11 +329,17 @@ public sealed class InstrumentGenerator : IIncrementalGenerator
             IsStatic = calledMethod.IsStatic,
             IsExtensionMethod = calledMethod.IsExtensionMethod,
             Parameters = new EquatableArray<ParameterInfo>(parameters),
-            Skip = new EquatableArray<string>(skip),
-            Fields = new EquatableArray<string>(fields),
-            RecordReturnValue = recordReturnValue,
-            RecordException = recordException,
-            Kind = kind,
+            Skip = new EquatableArray<string>(parsed.skip),
+            Fields = new EquatableArray<string>(parsed.fields),
+            RecordReturnValue = parsed.recordReturnValue,
+            RecordException = parsed.recordException,
+            Kind = parsed.kind,
+            RecordSuccess = parsed.recordSuccess,
+            IgnoreCancellation = parsed.ignoreCancellation,
+            Condition = parsed.condition,
+
+            LinkTo = parsed.linkTo,
+            TagMembers = new EquatableArray<TagMemberInfo>(tagMembers),
         };
 
         return new InterceptCallSite
@@ -306,20 +359,33 @@ public sealed class InstrumentGenerator : IIncrementalGenerator
         SourceProductionContext spc,
         ImmutableArray<InstrumentedMethodInfo?> methods,
         ImmutableArray<InterceptCallSite?> sites,
-        string? defaultActivitySourceName = null)
+        string? defaultActivitySourceName = null,
+        int tagNamingConvention = 0)
     {
-        // Apply the resolved default name to all methods/sites that don't have per-method overrides
-        if (defaultActivitySourceName is not null)
+        // Apply the resolved default name and tag naming to all methods/sites
+        if (defaultActivitySourceName is not null || tagNamingConvention != 0)
         {
             methods = methods.Select(m =>
-                m is not null && m.DefaultActivitySourceName is null
-                    ? m with { DefaultActivitySourceName = defaultActivitySourceName }
-                    : m).ToImmutableArray();
+            {
+                if (m is null) return m;
+                var updated = m;
+                if (defaultActivitySourceName is not null && m.DefaultActivitySourceName is null)
+                    updated = updated with { DefaultActivitySourceName = defaultActivitySourceName };
+                if (tagNamingConvention != 0)
+                    updated = updated with { TagNamingConvention = tagNamingConvention };
+                return updated;
+            }).ToImmutableArray();
 
             sites = sites.Select(s =>
-                s is not null && s.Method.DefaultActivitySourceName is null
-                    ? s with { Method = s.Method with { DefaultActivitySourceName = defaultActivitySourceName } }
-                    : s).ToImmutableArray();
+            {
+                if (s is null) return s;
+                var updatedMethod = s.Method;
+                if (defaultActivitySourceName is not null && s.Method.DefaultActivitySourceName is null)
+                    updatedMethod = updatedMethod with { DefaultActivitySourceName = defaultActivitySourceName };
+                if (tagNamingConvention != 0)
+                    updatedMethod = updatedMethod with { TagNamingConvention = tagNamingConvention };
+                return updatedMethod == s.Method ? s : s with { Method = updatedMethod };
+            }).ToImmutableArray();
         }
 
         var sb = new StringBuilder();
@@ -438,9 +504,27 @@ public sealed class InstrumentGenerator : IIncrementalGenerator
                 sb.AppendLine($"        internal static {asyncKeyword}{returnType} {wrapperName}({paramStr})");
                 sb.AppendLine("        {");
 
-                // HasListeners() guard — fast path when OTel isn't configured
                 var callExpr = isInstance ? $"__self.{method.MethodName}({argStr})" : $"{method.FullyQualifiedClassName}.{method.MethodName}({argStr})";
                 var awaitExpr = method.IsAwaitable ? "await " : "";
+
+                // Condition guard — if false, call original directly
+                if (method.Condition is not null)
+                {
+                    var condAccess = isInstance ? $"__self.{method.Condition}" : $"{method.FullyQualifiedClassName}.{method.Condition}";
+                    sb.AppendLine($"            if (!{condAccess})");
+                    if (method.ReturnsVoid || (!method.HasGenericReturn && method.IsAwaitable))
+                    {
+                        sb.AppendLine("            {");
+                        sb.AppendLine($"                {awaitExpr}{callExpr};");
+                        sb.AppendLine("                return;");
+                        sb.AppendLine("            }");
+                    }
+                    else
+                    {
+                        sb.AppendLine($"                return {awaitExpr}{callExpr};");
+                    }
+                    sb.AppendLine();
+                }
 
                 sb.AppendLine($"            if (!ActivitySources.{sourceField}.HasListeners())");
                 if (method.ReturnsVoid || (!method.HasGenericReturn && method.IsAwaitable))
@@ -456,15 +540,29 @@ public sealed class InstrumentGenerator : IIncrementalGenerator
                 }
                 sb.AppendLine();
 
-                sb.AppendLine($"            using var __activity = ActivitySources.{sourceField}");
-                sb.AppendLine($"                .StartActivity(\"{Escape(spanName)}\", {activityKind});");
+                // LinkTo support
+                if (method.LinkTo is not null)
+                {
+                    sb.AppendLine($"            var __links = new[] {{ new global::System.Diagnostics.ActivityLink({method.LinkTo}) }};");
+                    sb.AppendLine($"            using var __activity = ActivitySources.{sourceField}");
+                    sb.AppendLine($"                .StartActivity(\"{Escape(spanName)}\", {activityKind}, default(global::System.Diagnostics.ActivityContext), links: __links);");
+                }
+                else
+                {
+                    sb.AppendLine($"            using var __activity = ActivitySources.{sourceField}");
+                    sb.AppendLine($"                .StartActivity(\"{Escape(spanName)}\", {activityKind});");
+                }
                 sb.AppendLine();
 
+                // Tag parameters
                 var taggable = method.Parameters
                     .Where(p => ShouldTagParameter(p, method) && p.RefKind != "out")
                     .ToList();
 
-                if (taggable.Count > 0)
+                // Tag members from [Tag] attribute
+                var tagMembers = method.TagMembers.Where(_ => isInstance).ToList();
+
+                if (taggable.Count > 0 || tagMembers.Count > 0)
                 {
                     sb.AppendLine("            if (__activity is not null)");
                     sb.AppendLine("            {");
@@ -475,15 +573,20 @@ public sealed class InstrumentGenerator : IIncrementalGenerator
                             foreach (var prop in p.Properties)
                             {
                                 if (!ShouldTagProperty(p, prop, method)) continue;
-                                var tagName = $"{method.MethodName.ToLowerInvariant()}.{p.Name.ToLowerInvariant()}.{prop.Name.ToLowerInvariant()}";
+                                var tagName = FormatTagName(method.MethodName, p.Name, prop.Name, method.TagNamingConvention);
                                 sb.AppendLine($"                __activity.SetTag(\"{Escape(tagName)}\", {p.Name}?.{prop.Name});");
                             }
                         }
                         else
                         {
-                            var tagName = $"{method.MethodName.ToLowerInvariant()}.{p.Name.ToLowerInvariant()}";
+                            var tagName = FormatTagName(method.MethodName, p.Name, null, method.TagNamingConvention);
                             sb.AppendLine($"                __activity.SetTag(\"{Escape(tagName)}\", {p.Name});");
                         }
+                    }
+                    foreach (var tm in tagMembers)
+                    {
+                        var tagName = tm.TagName ?? tm.MemberName.ToLowerInvariant();
+                        sb.AppendLine($"                __activity.SetTag(\"{Escape(tagName)}\", __self.{tm.MemberName});");
                     }
                     sb.AppendLine("            }");
                     sb.AppendLine();
@@ -497,6 +600,10 @@ public sealed class InstrumentGenerator : IIncrementalGenerator
                     if (method.ReturnsVoid || (!method.HasGenericReturn && method.IsAwaitable))
                     {
                         sb.AppendLine($"                {awaitExpr}{callExpr};");
+                        if (method.RecordSuccess)
+                        {
+                            sb.AppendLine("                __activity?.SetStatus(global::System.Diagnostics.ActivityStatusCode.Ok);");
+                        }
                     }
                     else
                     {
@@ -505,23 +612,49 @@ public sealed class InstrumentGenerator : IIncrementalGenerator
                         {
                             sb.AppendLine($"                __activity?.SetTag(\"{method.MethodName.ToLowerInvariant()}.return_value\", __result?.ToString());");
                         }
+                        if (method.RecordSuccess)
+                        {
+                            sb.AppendLine("                __activity?.SetStatus(global::System.Diagnostics.ActivityStatusCode.Ok);");
+                        }
                         sb.AppendLine("                return __result;");
                     }
 
                     sb.AppendLine("            }");
                     sb.AppendLine("            catch (global::System.Exception __ex)");
                     sb.AppendLine("            {");
-                    sb.AppendLine("                if (__activity is not null)");
-                    sb.AppendLine("                {");
-                    sb.AppendLine("                    __activity.SetStatus(global::System.Diagnostics.ActivityStatusCode.Error, __ex.Message);");
-                    sb.AppendLine("                    __activity.AddEvent(new global::System.Diagnostics.ActivityEvent(\"exception\",");
-                    sb.AppendLine("                        tags: new global::System.Diagnostics.ActivityTagsCollection");
-                    sb.AppendLine("                        {");
-                    sb.AppendLine("                            { \"exception.type\", __ex.GetType().FullName },");
-                    sb.AppendLine("                            { \"exception.message\", __ex.Message },");
-                    sb.AppendLine("                            { \"exception.stacktrace\", __ex.ToString() }");
-                    sb.AppendLine("                        }));");
-                    sb.AppendLine("                }");
+
+                    if (method.IgnoreCancellation)
+                    {
+                        sb.AppendLine("                if (__ex is not global::System.OperationCanceledException)");
+                        sb.AppendLine("                {");
+                        sb.AppendLine("                    if (__activity is not null)");
+                        sb.AppendLine("                    {");
+                        sb.AppendLine("                        __activity.SetStatus(global::System.Diagnostics.ActivityStatusCode.Error, __ex.Message);");
+                        sb.AppendLine("                        __activity.AddEvent(new global::System.Diagnostics.ActivityEvent(\"exception\",");
+                        sb.AppendLine("                            tags: new global::System.Diagnostics.ActivityTagsCollection");
+                        sb.AppendLine("                            {");
+                        sb.AppendLine("                                { \"exception.type\", __ex.GetType().FullName },");
+                        sb.AppendLine("                                { \"exception.message\", __ex.Message },");
+                        sb.AppendLine("                                { \"exception.stacktrace\", __ex.ToString() }");
+                        sb.AppendLine("                            }));");
+                        sb.AppendLine("                    }");
+                        sb.AppendLine("                }");
+                    }
+                    else
+                    {
+                        sb.AppendLine("                if (__activity is not null)");
+                        sb.AppendLine("                {");
+                        sb.AppendLine("                    __activity.SetStatus(global::System.Diagnostics.ActivityStatusCode.Error, __ex.Message);");
+                        sb.AppendLine("                    __activity.AddEvent(new global::System.Diagnostics.ActivityEvent(\"exception\",");
+                        sb.AppendLine("                        tags: new global::System.Diagnostics.ActivityTagsCollection");
+                        sb.AppendLine("                        {");
+                        sb.AppendLine("                            { \"exception.type\", __ex.GetType().FullName },");
+                        sb.AppendLine("                            { \"exception.message\", __ex.Message },");
+                        sb.AppendLine("                            { \"exception.stacktrace\", __ex.ToString() }");
+                        sb.AppendLine("                        }));");
+                        sb.AppendLine("                }");
+                    }
+
                     sb.AppendLine("                throw;");
                     sb.AppendLine("            }");
                 }
@@ -530,6 +663,10 @@ public sealed class InstrumentGenerator : IIncrementalGenerator
                     if (method.ReturnsVoid || (!method.HasGenericReturn && method.IsAwaitable))
                     {
                         sb.AppendLine($"            {awaitExpr}{callExpr};");
+                        if (method.RecordSuccess)
+                        {
+                            sb.AppendLine("            __activity?.SetStatus(global::System.Diagnostics.ActivityStatusCode.Ok);");
+                        }
                     }
                     else
                     {
@@ -537,13 +674,27 @@ public sealed class InstrumentGenerator : IIncrementalGenerator
                         {
                             sb.AppendLine($"            var __result = {awaitExpr}{callExpr};");
                             sb.AppendLine($"            __activity?.SetTag(\"{method.MethodName.ToLowerInvariant()}.return_value\", __result?.ToString());");
+                            if (method.RecordSuccess)
+                            {
+                                sb.AppendLine("            __activity?.SetStatus(global::System.Diagnostics.ActivityStatusCode.Ok);");
+                            }
                             sb.AppendLine("            return __result;");
                         }
                         else
                         {
-                            sb.AppendLine($"            return {awaitExpr}{callExpr};");
+                            if (method.RecordSuccess)
+                            {
+                                sb.AppendLine($"            var __result = {awaitExpr}{callExpr};");
+                                sb.AppendLine("            __activity?.SetStatus(global::System.Diagnostics.ActivityStatusCode.Ok);");
+                                sb.AppendLine("            return __result;");
+                            }
+                            else
+                            {
+                                sb.AppendLine($"            return {awaitExpr}{callExpr};");
+                            }
                         }
                     }
+
                 }
 
                 sb.AppendLine("        }");
@@ -561,6 +712,10 @@ public sealed class InstrumentGenerator : IIncrementalGenerator
 
     private static bool ShouldTagParameter(ParameterInfo p, InstrumentedMethodInfo m)
     {
+        // [NoInstrument] with no properties → skip entire parameter
+        if (p.HasNoInstrument && p.NoInstrumentProperties.Length == 0)
+            return false;
+
         if (m.Fields.Length > 0)
         {
             // Include if Fields mentions this param directly or via dot-notation
@@ -576,6 +731,13 @@ public sealed class InstrumentGenerator : IIncrementalGenerator
 
     private static bool ShouldTagProperty(ParameterInfo p, PropertyMetadata prop, InstrumentedMethodInfo m)
     {
+        // [NoInstrument("PropName")] → skip that specific property
+        if (p.HasNoInstrument && p.NoInstrumentProperties.Length > 0)
+        {
+            if (p.NoInstrumentProperties.Any(np => string.Equals(np, prop.Name, System.StringComparison.OrdinalIgnoreCase)))
+                return false;
+        }
+
         var dotPath = $"{p.Name}.{prop.Name}";
         if (m.Fields.Length > 0)
         {
@@ -614,12 +776,77 @@ public sealed class InstrumentGenerator : IIncrementalGenerator
                 .ToArray();
         }
 
+        // Check for [NoInstrument] attribute on the parameter
+        bool hasNoInstrument = false;
+        var noInstrumentProperties = System.Array.Empty<string>();
+        var noInstrAttr = p.GetAttributes().FirstOrDefault(a =>
+            a.AttributeClass?.ToDisplayString() == NoInstrumentAttributeFqn);
+        if (noInstrAttr is not null)
+        {
+            hasNoInstrument = true;
+            if (noInstrAttr.ConstructorArguments.Length > 0)
+            {
+                var arg = noInstrAttr.ConstructorArguments[0];
+                if (arg.Kind == TypedConstantKind.Array)
+                {
+                    noInstrumentProperties = arg.Values
+                        .Select(v => v.Value as string)
+                        .Where(v => v != null)
+                        .ToArray()!;
+                }
+            }
+        }
+
         return new ParameterInfo(
             p.Name,
             typeStr,
             refKind,
             isComplex,
-            new EquatableArray<PropertyMetadata>(properties));
+            new EquatableArray<PropertyMetadata>(properties),
+            hasNoInstrument,
+            new EquatableArray<string>(noInstrumentProperties));
+    }
+
+    private static TagMemberInfo[] ExtractTagMembers(INamedTypeSymbol containingType)
+    {
+        var tagMembers = new System.Collections.Generic.List<TagMemberInfo>();
+        foreach (var member in containingType.GetMembers())
+        {
+            var tagAttr = member.GetAttributes().FirstOrDefault(a =>
+                a.AttributeClass?.ToDisplayString() == TagAttributeFqn);
+            if (tagAttr is null) continue;
+
+            string? tagName = null;
+            foreach (var arg in tagAttr.NamedArguments)
+            {
+                if (arg.Key == "Name")
+                    tagName = arg.Value.Value as string;
+            }
+
+            string memberType;
+            if (member is IPropertySymbol prop)
+                memberType = prop.Type.ToDisplayString(SymbolDisplayFormat.FullyQualifiedFormat);
+            else if (member is IFieldSymbol field)
+                memberType = field.Type.ToDisplayString(SymbolDisplayFormat.FullyQualifiedFormat);
+            else
+                continue;
+
+            tagMembers.Add(new TagMemberInfo(member.Name, tagName, memberType));
+        }
+        return tagMembers.ToArray();
+    }
+
+    private static string FormatTagName(string methodName, string paramName, string? propName, int convention)
+    {
+        var method = methodName.ToLowerInvariant();
+        var param = paramName.ToLowerInvariant();
+        var prop = propName?.ToLowerInvariant();
+
+        return convention switch
+        {
+            1 => prop is not null ? $"{param}.{prop}" : param, // Flat
+            _ => prop is not null ? $"{method}.{param}.{prop}" : $"{method}.{param}", // Method / OTel
+        };
     }
 
     private static bool IsComplexType(ITypeSymbol type)

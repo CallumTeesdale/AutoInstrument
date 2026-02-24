@@ -169,6 +169,151 @@ public class InstrumentAnalyzerTests
         await test.RunAsync();
     }
 
+    [Fact]
+    public async Task Condition_InvalidMember_ReportsDiagnostic()
+    {
+        var source = """
+            using AutoInstrument;
+
+            public class MyService
+            {
+                [{|#0:Instrument(Condition = "NotExist")|}]
+                public void Process(int id) { }
+            }
+            """;
+
+        var test = CreateTest(source);
+        test.ExpectedDiagnostics.Add(new DiagnosticResult(InstrumentAnalyzer.InvalidCondition)
+            .WithLocation(0)
+            .WithArguments("NotExist", "MyService"));
+        await test.RunAsync();
+    }
+
+    [Fact]
+    public async Task Condition_ValidBoolProperty_NoDiagnostic()
+    {
+        var source = """
+            using AutoInstrument;
+
+            public class MyService
+            {
+                public bool IsEnabled { get; set; }
+
+                [Instrument(Condition = "IsEnabled")]
+                public void Process(int id) { }
+            }
+            """;
+
+        var test = CreateTest(source);
+        await test.RunAsync();
+    }
+
+    [Fact]
+    public async Task LinkTo_InvalidParameterName_ReportsDiagnostic()
+    {
+        var source = """
+            using AutoInstrument;
+
+            public class MyService
+            {
+                [{|#0:Instrument(LinkTo = "notAParam")|}]
+                public void Process(int id) { }
+            }
+            """;
+
+        var test = CreateTest(source);
+        test.ExpectedDiagnostics.Add(new DiagnosticResult(InstrumentAnalyzer.InvalidLinkTo)
+            .WithLocation(0)
+            .WithArguments("notAParam", "MyService.Process"));
+        await test.RunAsync();
+    }
+
+    [Fact]
+    public async Task LinkTo_WrongType_ReportsDiagnostic()
+    {
+        var source = """
+            using AutoInstrument;
+
+            public class MyService
+            {
+                [{|#0:Instrument(LinkTo = "id")|}]
+                public void Process(int id) { }
+            }
+            """;
+
+        var test = CreateTest(source);
+        test.ExpectedDiagnostics.Add(new DiagnosticResult(InstrumentAnalyzer.InvalidLinkTo)
+            .WithLocation(0)
+            .WithArguments("id", "MyService.Process"));
+        await test.RunAsync();
+    }
+
+    [Fact]
+    public async Task LinkTo_ValidActivityContext_NoDiagnostic()
+    {
+        var source = """
+            using System.Diagnostics;
+            using AutoInstrument;
+
+            public class MyService
+            {
+                [Instrument(LinkTo = "ctx")]
+                public void Process(int id, ActivityContext ctx) { }
+            }
+            """;
+
+        var test = CreateTest(source);
+        await test.RunAsync();
+    }
+
+    [Fact]
+    public async Task NoInstrument_InvalidPropertyName_ReportsDiagnostic()
+    {
+        var source = """
+            using AutoInstrument;
+
+            public class Order
+            {
+                public int Id { get; set; }
+            }
+
+            public class MyService
+            {
+                [Instrument]
+                public void Process([{|#0:NoInstrument("Nonexistent")|}] Order order) { }
+            }
+            """;
+
+        var test = CreateTest(source);
+        test.ExpectedDiagnostics.Add(new DiagnosticResult(InstrumentAnalyzer.InvalidNoInstrumentProperty)
+            .WithLocation(0)
+            .WithArguments("Nonexistent", "order", "Order", "MyService.Process"));
+        await test.RunAsync();
+    }
+
+    [Fact]
+    public async Task NoInstrument_ValidPropertyName_NoDiagnostic()
+    {
+        var source = """
+            using AutoInstrument;
+
+            public class Order
+            {
+                public int Id { get; set; }
+                public string Name { get; set; }
+            }
+
+            public class MyService
+            {
+                [Instrument]
+                public void Process([NoInstrument("Name")] Order order) { }
+            }
+            """;
+
+        var test = CreateTest(source);
+        await test.RunAsync();
+    }
+
     private static CSharpAnalyzerTest<InstrumentAnalyzer, DefaultVerifier> CreateTest(string source)
     {
         var test = new CSharpAnalyzerTest<InstrumentAnalyzer, DefaultVerifier>

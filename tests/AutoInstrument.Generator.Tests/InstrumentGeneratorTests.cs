@@ -734,4 +734,306 @@ public class InstrumentGeneratorTests
         // id should still be tagged
         Assert.Contains("process.id", interceptor.Source);
     }
+
+    [Fact]
+    public void NoInstrument_SkipsEntireParameter()
+    {
+        var source = """
+            using AutoInstrument;
+
+            public class MyService
+            {
+                [Instrument]
+                public void Login(string user, [NoInstrument] string password) { }
+            }
+
+            public class Caller
+            {
+                public void Run()
+                {
+                    var svc = new MyService();
+                    svc.Login("admin", "secret");
+                }
+            }
+            """;
+
+        var results = GeneratorTestHelper.RunGenerator(source);
+
+        var interceptor = results.FirstOrDefault(r => r.HintName.Contains("Interceptors"));
+        Assert.Contains("SetTag(\"login.user\"", interceptor.Source);
+        Assert.DoesNotContain("login.password", interceptor.Source);
+    }
+
+    [Fact]
+    public void NoInstrument_WithProperties_SkipsSpecificProperties()
+    {
+        var source = """
+            using AutoInstrument;
+
+            public class Order
+            {
+                public int Id { get; set; }
+                public string CreditCard { get; set; }
+                public string Name { get; set; }
+            }
+
+            public class MyService
+            {
+                [Instrument]
+                public void Process([NoInstrument("CreditCard")] Order order) { }
+            }
+
+            public class Caller
+            {
+                public void Run()
+                {
+                    var svc = new MyService();
+                    svc.Process(new Order());
+                }
+            }
+            """;
+
+        var results = GeneratorTestHelper.RunGenerator(source);
+
+        var interceptor = results.FirstOrDefault(r => r.HintName.Contains("Interceptors"));
+        Assert.Contains("process.order.id", interceptor.Source);
+        Assert.Contains("process.order.name", interceptor.Source);
+        Assert.DoesNotContain("creditcard", interceptor.Source);
+    }
+
+    [Fact]
+    public void RecordSuccess_EmitsSetStatusOk()
+    {
+        var source = """
+            using AutoInstrument;
+
+            public class MyService
+            {
+                [Instrument(RecordSuccess = true)]
+                public void DoWork() { }
+            }
+
+            public class Caller
+            {
+                public void Run()
+                {
+                    var svc = new MyService();
+                    svc.DoWork();
+                }
+            }
+            """;
+
+        var results = GeneratorTestHelper.RunGenerator(source);
+
+        var interceptor = results.FirstOrDefault(r => r.HintName.Contains("Interceptors"));
+        Assert.Contains("SetStatus(global::System.Diagnostics.ActivityStatusCode.Ok)", interceptor.Source);
+    }
+
+    [Fact]
+    public void IgnoreCancellation_True_HasOCEGuard()
+    {
+        var source = """
+            using AutoInstrument;
+
+            public class MyService
+            {
+                [Instrument(IgnoreCancellation = true)]
+                public void DoWork() { }
+            }
+
+            public class Caller
+            {
+                public void Run()
+                {
+                    var svc = new MyService();
+                    svc.DoWork();
+                }
+            }
+            """;
+
+        var results = GeneratorTestHelper.RunGenerator(source);
+
+        var interceptor = results.FirstOrDefault(r => r.HintName.Contains("Interceptors"));
+        Assert.Contains("is not global::System.OperationCanceledException", interceptor.Source);
+    }
+
+    [Fact]
+    public void IgnoreCancellation_False_NoOCEGuard()
+    {
+        var source = """
+            using AutoInstrument;
+
+            public class MyService
+            {
+                [Instrument(IgnoreCancellation = false)]
+                public void DoWork() { }
+            }
+
+            public class Caller
+            {
+                public void Run()
+                {
+                    var svc = new MyService();
+                    svc.DoWork();
+                }
+            }
+            """;
+
+        var results = GeneratorTestHelper.RunGenerator(source);
+
+        var interceptor = results.FirstOrDefault(r => r.HintName.Contains("Interceptors"));
+        Assert.DoesNotContain("OperationCanceledException", interceptor.Source);
+    }
+
+    [Fact]
+    public void TagAttribute_EmitsTagFromMember()
+    {
+        var source = """
+            using AutoInstrument;
+
+            public class MyService
+            {
+                [Tag] public string Region { get; set; }
+                [Tag(Name = "env")] public string Environment { get; set; }
+
+                [Instrument]
+                public void Process(int id) { }
+            }
+
+            public class Caller
+            {
+                public void Run()
+                {
+                    var svc = new MyService();
+                    svc.Process(1);
+                }
+            }
+            """;
+
+        var results = GeneratorTestHelper.RunGenerator(source);
+
+        var interceptor = results.FirstOrDefault(r => r.HintName.Contains("Interceptors"));
+        Assert.Contains("SetTag(\"region\", __self.Region)", interceptor.Source);
+        Assert.Contains("SetTag(\"env\", __self.Environment)", interceptor.Source);
+    }
+
+    [Fact]
+    public void TagNamingConvention_Flat_NoMethodPrefix()
+    {
+        var source = """
+            using AutoInstrument;
+
+            [assembly: AutoInstrumentConfig(TagNaming = TagNamingConvention.Flat)]
+
+            public class MyService
+            {
+                [Instrument]
+                public void Process(int id, string name) { }
+            }
+
+            public class Caller
+            {
+                public void Run()
+                {
+                    var svc = new MyService();
+                    svc.Process(1, "test");
+                }
+            }
+            """;
+
+        var results = GeneratorTestHelper.RunGenerator(source);
+
+        var interceptor = results.FirstOrDefault(r => r.HintName.Contains("Interceptors"));
+        Assert.Contains("SetTag(\"id\", id)", interceptor.Source);
+        Assert.Contains("SetTag(\"name\", name)", interceptor.Source);
+        Assert.DoesNotContain("process.id", interceptor.Source);
+    }
+
+    [Fact]
+    public void Condition_EmitsConditionGuard()
+    {
+        var source = """
+            using AutoInstrument;
+
+            public class MyService
+            {
+                public bool IsEnabled { get; set; }
+
+                [Instrument(Condition = "IsEnabled")]
+                public void Process(int id) { }
+            }
+
+            public class Caller
+            {
+                public void Run()
+                {
+                    var svc = new MyService();
+                    svc.Process(1);
+                }
+            }
+            """;
+
+        var results = GeneratorTestHelper.RunGenerator(source);
+
+        var interceptor = results.FirstOrDefault(r => r.HintName.Contains("Interceptors"));
+        Assert.Contains("if (!__self.IsEnabled)", interceptor.Source);
+    }
+
+    [Fact]
+    public void LinkTo_EmitsActivityLink()
+    {
+        var source = """
+            using System.Diagnostics;
+            using AutoInstrument;
+
+            public class MyService
+            {
+                [Instrument(LinkTo = "ctx")]
+                public void Process(int id, ActivityContext ctx) { }
+            }
+
+            public class Caller
+            {
+                public void Run()
+                {
+                    var svc = new MyService();
+                    svc.Process(1, default);
+                }
+            }
+            """;
+
+        var results = GeneratorTestHelper.RunGenerator(source);
+
+        var interceptor = results.FirstOrDefault(r => r.HintName.Contains("Interceptors"));
+        Assert.Contains("new global::System.Diagnostics.ActivityLink(ctx)", interceptor.Source);
+    }
+
+    [Fact]
+    public void MsBuildTagNaming_Flat_OverridesDefault()
+    {
+        var source = """
+            using AutoInstrument;
+
+            public class MyService
+            {
+                [Instrument]
+                public void Process(int id) { }
+            }
+
+            public class Caller
+            {
+                public void Run()
+                {
+                    var svc = new MyService();
+                    svc.Process(1);
+                }
+            }
+            """;
+
+        var results = GeneratorTestHelper.RunGenerator(source, tagNaming: "Flat");
+
+        var interceptor = results.FirstOrDefault(r => r.HintName.Contains("Interceptors"));
+        Assert.Contains("SetTag(\"id\", id)", interceptor.Source);
+        Assert.DoesNotContain("process.id", interceptor.Source);
+    }
 }

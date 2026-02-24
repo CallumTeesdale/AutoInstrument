@@ -34,6 +34,14 @@ internal sealed record InstrumentedMethodInfo
     public bool RecordReturnValue { get; init; }
     public bool RecordException { get; init; } = true;
     public int Kind { get; init; }
+
+    // New features
+    public bool RecordSuccess { get; init; }
+    public bool IgnoreCancellation { get; init; } = true;
+    public string? Condition { get; init; }
+    public string? LinkTo { get; init; }
+    public EquatableArray<TagMemberInfo> TagMembers { get; init; } = new(Array.Empty<TagMemberInfo>());
+    public int TagNamingConvention { get; init; } // 0=Method, 1=Flat, 2=OTel
 }
 
 internal sealed record InterceptCallSite
@@ -52,13 +60,21 @@ internal sealed record ParameterInfo(
     string Type,
     string? RefKind,
     bool IsComplex = false,
-    EquatableArray<PropertyMetadata> Properties = default
+    EquatableArray<PropertyMetadata> Properties = default,
+    bool HasNoInstrument = false,
+    EquatableArray<string> NoInstrumentProperties = default
 ) : IEquatable<ParameterInfo>;
 
 internal sealed record PropertyMetadata(
     string Name,
     string Type
 ) : IEquatable<PropertyMetadata>;
+
+internal sealed record TagMemberInfo(
+    string MemberName,
+    string? TagName,
+    string Type
+) : IEquatable<TagMemberInfo>;
 
 internal readonly struct EquatableArray<T> : IEquatable<EquatableArray<T>>, IEnumerable<T>
     where T : IEquatable<T>

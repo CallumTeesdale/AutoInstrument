@@ -61,4 +61,27 @@ public sealed class InstrumentAttribute : Attribute
     /// Defaults to Internal (0).
     /// </summary>
     public int Kind { get; set; } = 0; // 0=Internal, 1=Server, 2=Client, 3=Producer, 4=Consumer
+
+    /// <summary>
+    /// Set the activity status to Ok when the method completes without exceptions.
+    /// Default is false.
+    /// </summary>
+    public bool RecordSuccess { get; set; }
+
+    /// <summary>
+    /// Don't record <see cref="OperationCanceledException"/> as errors on the span.
+    /// Default is true — cancellations are silently ignored.
+    /// </summary>
+    public bool IgnoreCancellation { get; set; } = true;
+
+    /// <summary>
+    /// Name of a boolean property or field on the containing type.
+    /// When set, instrumentation is only active if the condition evaluates to true at runtime.
+    /// </summary>
+    public string? Condition { get; set; }
+
+    /// <summary>
+    /// Name of a parameter of type <c>ActivityContext</c> to link to the span as an <c>ActivityLink</c>.
+    /// </summary>
+    public string? LinkTo { get; set; }
 }
