@@ -8,6 +8,7 @@
     <PackageId>AutoInstrument.Attributes</PackageId>
     <Version>1.0.0</Version>
     <Description>Marker attributes for AutoInstrument — Rust-style [Instrument] for .NET OpenTelemetry tracing</Description>
+    <PackageTags>opentelemetry tracing instrumentation attributes observability</PackageTags>
   </PropertyGroup>
 
 </Project>
