@@ -256,10 +256,8 @@ public sealed class InstrumentGenerator : IIncrementalGenerator
         var hasInstrument = targetMethod.GetAttributes().Any(a =>
             a.AttributeClass?.ToDisplayString() == AttributeFqn);
         if (!hasInstrument) return null;
-
-#pragma warning disable RSEXPERIMENTAL002
+        
         var location = ctx.SemanticModel.GetInterceptableLocation(invocation);
-#pragma warning restore RSEXPERIMENTAL002
         if (location is null) return null;
 
         var attr = targetMethod.GetAttributes().First(a =>
@@ -712,7 +710,6 @@ public sealed class InstrumentGenerator : IIncrementalGenerator
 
     private static bool ShouldTagParameter(ParameterInfo p, InstrumentedMethodInfo m)
     {
-        // [NoInstrument] with no properties → skip entire parameter
         if (p.HasNoInstrument && p.NoInstrumentProperties.Length == 0)
             return false;
 
@@ -731,7 +728,6 @@ public sealed class InstrumentGenerator : IIncrementalGenerator
 
     private static bool ShouldTagProperty(ParameterInfo p, PropertyMetadata prop, InstrumentedMethodInfo m)
     {
-        // [NoInstrument("PropName")] → skip that specific property
         if (p.HasNoInstrument && p.NoInstrumentProperties.Length > 0)
         {
             if (p.NoInstrumentProperties.Any(np => string.Equals(np, prop.Name, System.StringComparison.OrdinalIgnoreCase)))
