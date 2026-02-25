@@ -1,5 +1,0 @@
-// Validating benchmarks:
-//    * Only 1 benchmark method in a group can have "Baseline = true" applied to it, group ShortRun(IterationCount=3, LaunchCount=1, WarmupCount=3) in class InstrumentationOverheadBenchmarks has 4
-
-//    * Only 1 benchmark method in a group can have "Baseline = true" applied to it, group ShortRun(IterationCount=3, LaunchCount=1, WarmupCount=3) in class InstrumentationWithListenerBenchmarks has 4
-
