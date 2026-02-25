@@ -1,0 +1,12 @@
+{
+  "profiles": {
+    "short": {
+      "commandName": "Project",
+      "commandLineArgs": "--job short --filter *"
+    },
+    "full": {
+      "commandName": "Project",
+      "commandLineArgs": "--filter *"
+    }
+  }
+}

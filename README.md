@@ -152,6 +152,54 @@ Or via MSBuild: `<AutoInstrumentDepth>2</AutoInstrumentDepth>`
 | AUTOINST007 | `[Tag]` Skip references unknown property |
 | AUTOINST008 | `[Tag]` Fields references unknown property |
 
+## Benchmarks
+
+Measured on Apple M3, .NET 10.0.0, BenchmarkDotNet v0.14.0:
+
+```bash
+dotnet run -c Release --project benchmarks/AutoInstrument.Benchmarks -- --filter '*'
+```
+
+### No listener attached
+
+When no `ActivityListener` is registered, the interceptor hits `HasListeners() == false` and calls through immediately. The overhead is sub-nanosecond for sync methods and zero-allocation:
+
+| Method                    | Mean       | Allocated |
+|-------------------------- |-----------:|----------:|
+| SyncVoid_Baseline         |  0.2881 ns |         - |
+| SyncVoid_Instrumented     |  0.9661 ns |         - |
+|                           |            |           |
+| SyncReturn_Baseline       |  0.0000 ns |         - |
+| SyncReturn_Instrumented   |  0.7683 ns |         - |
+|                           |            |           |
+| AsyncTask_Baseline        |  0.0000 ns |         - |
+| AsyncTask_Instrumented    |  4.2182 ns |         - |
+|                           |            |           |
+| AsyncTaskOfT_Baseline     |  3.1152 ns |      72 B |
+| AsyncTaskOfT_Instrumented | 10.9167 ns |     144 B |
+
+### With listener attached
+
+When a listener is active, the generator creates an `Activity`, sets tags, and wraps in try-catch - identical to hand-written code. **Generated** and **Manual** columns show equivalent performance:
+
+| Method                 | Mean        | Allocated |
+|----------------------- |------------:|----------:|
+| SyncVoid_Baseline      |   0.329 ns  |         - |
+| SyncVoid_Manual        |  91.102 ns  |     416 B |
+| SyncVoid_Generated     |  92.752 ns  |     416 B |
+|                        |             |           |
+| SyncReturn_Baseline    |   0.000 ns  |         - |
+| SyncReturn_Manual      | 103.725 ns  |     520 B |
+| SyncReturn_Generated   | 104.395 ns  |     520 B |
+|                        |             |           |
+| AsyncTask_Baseline     |   0.000 ns  |         - |
+| AsyncTask_Manual       |  96.344 ns  |     416 B |
+| AsyncTask_Generated    |  95.048 ns  |     416 B |
+|                        |             |           |
+| AsyncTaskOfT_Baseline  |   3.166 ns  |      72 B |
+| AsyncTaskOfT_Manual    | 116.558 ns  |     664 B |
+| AsyncTaskOfT_Generated | 118.516 ns  |     664 B |
+
 ## Limitations
 
 - Interceptors only work within the same compilation — cross-project calls aren't intercepted.
