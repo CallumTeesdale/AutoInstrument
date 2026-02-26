@@ -35,7 +35,7 @@ jobs:
         run: echo "file=$(find BenchmarkDotNet.Artifacts/results -name '*-report-full-compressed.json' | head -1)" >> "$GITHUB_OUTPUT"
 
       - name: Upload benchmark results
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: benchmark-results
           path: BenchmarkDotNet.Artifacts/results/
