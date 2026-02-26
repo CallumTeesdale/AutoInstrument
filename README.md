@@ -1,5 +1,9 @@
 # AutoInstrument
 
+[![CI](https://github.com/CallumTeesdale/AutoInstrument/actions/workflows/ci.yml/badge.svg)](https://github.com/CallumTeesdale/AutoInstrument/actions/workflows/ci.yml)
+[![NuGet](https://img.shields.io/nuget/v/AutoInstrument.svg)](https://www.nuget.org/packages/AutoInstrument)
+[![NuGet Downloads](https://img.shields.io/nuget/dt/AutoInstrument.svg)](https://www.nuget.org/packages/AutoInstrument)
+
 `[Instrument]` for .NET - add an attribute, get OpenTelemetry spans with tagged parameters at every call-site. Inspired by Rust's `#[instrument]`.
 
 ```csharp
